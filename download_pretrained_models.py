@@ -27,31 +27,38 @@ def download_convnext_pretrained():
         num_classes = 1000  # 기본값 (ImageNet)
         print(f"⚠️ Dataset not found, using default: {num_classes} classes")
     
-    try:
-        # pretrained=True로 모델 생성하여 가중치 다운로드
-        model = timm.create_model(
-            model_name,
-            pretrained=True,  # 사전 훈련된 가중치 다운로드
-            num_classes=num_classes  # 동적으로 계산된 클래스 수
-        )
-        
-        # 모델 저장 디렉토리 생성
-        save_dir = Path("pretrained_models")
-        save_dir.mkdir(exist_ok=True)
-        
-        # 모델 가중치 저장
-        model_path = save_dir / f"{model_name}_pretrained.pth"
-        torch.save(model.state_dict(), model_path)
-        
-        print(f"✅ ConvNeXtV2 모델 저장 완료: {model_path}")
-        print(f"  - 모델명: {model_name}")
-        print(f"  - 파일 크기: {model_path.stat().st_size / (1024*1024):.1f} MB")
-        
-        return model_path
-        
-    except Exception as e:
-        print(f"❌ ConvNeXtV2 다운로드 실패: {e}")
-        return None
+    # pretrained=True로 모델 생성하여 가중치 다운로드
+    model = timm.create_model(
+        model_name,
+        pretrained=True,  # 사전 훈련된 가중치 다운로드
+        num_classes=num_classes  # 동적으로 계산된 클래스 수
+    )
+    
+    # 가중치에서 model. prefix 제거
+    state_dict = model.state_dict()
+    clean_state_dict = {}
+    for key, value in state_dict.items():
+        if key.startswith('model.'):
+            new_key = key[6:]  # "model." 제거
+            clean_state_dict[new_key] = value
+        else:
+            clean_state_dict[key] = value
+    
+    # 모델 저장 디렉토리 생성
+    save_dir = Path("pretrained_models")
+    save_dir.mkdir(exist_ok=True)
+    
+    # 모델 가중치 저장 (prefix 제거된 상태)
+    model_path = save_dir / f"{model_name}_pretrained.pth"
+    torch.save(clean_state_dict, model_path)
+    
+    print(f"✅ ConvNeXtV2 모델 저장 완료: {model_path}")
+    print(f"  - 모델명: {model_name}")
+    print(f"  - 클래스 수: {num_classes}")
+    print(f"  - 파일 크기: {model_path.stat().st_size / (1024*1024):.1f} MB")
+    print(f"  - model. prefix 제거됨")
+    
+    return model_path
 
 def download_yolo_pretrained():
     """YOLO 사전 훈련된 모델 다운로드"""

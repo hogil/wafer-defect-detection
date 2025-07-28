@@ -151,46 +151,68 @@ class WaferTrainer:
         
         print(f"🤖 Creating ConvNeXtV2 model...")
         
-        self.model = timm.create_model(
-            self.config.CONVNEXT_MODEL_NAME,
-            pretrained=False,  # 별도 가중치 로드
-            num_classes=self.num_classes
-        )
-        
         # 사전 훈련된 가중치 로드
         pretrained_path = Path(self.config.CONVNEXT_PRETRAINED_MODEL)
-        weights_loaded = False
+        pretrained_weights = torch.load(pretrained_path, map_location=self.device)
         
-        if pretrained_path.exists():
-            print(f"🔄 Loading pretrained weights from: {pretrained_path}")
-            pretrained_weights = torch.load(pretrained_path, map_location=self.device)
+        # model. prefix 제거
+        clean_pretrained_weights = {}
+        for key, value in pretrained_weights.items():
+            if key.startswith('model.'):
+                new_key = key[6:]  # "model." 제거
+                clean_pretrained_weights[new_key] = value
+            else:
+                clean_pretrained_weights[key] = value
+        
+        # 가중치에서 클래스 수 추출 (head.fc.weight 또는 classifier.weight에서)
+        weight_num_classes = None
+        for key in clean_pretrained_weights.keys():
+            if key in ['head.fc.weight', 'classifier.weight']:
+                weight_num_classes = clean_pretrained_weights[key].shape[0]
+                break
+        
+        # 모델 생성 (가중치의 클래스 수로)
+        self.model = timm.create_model(
+            self.config.CONVNEXT_MODEL_NAME,
+            pretrained=False,
+            num_classes=weight_num_classes
+        )
+        
+        # 분류 헤드를 데이터셋의 클래스 수로 교체
+        if weight_num_classes != self.num_classes:
+            # 기존 분류 헤드 제거
+            if hasattr(self.model, 'head'):
+                delattr(self.model, 'head')
+            if hasattr(self.model, 'classifier'):
+                delattr(self.model, 'classifier')
             
-            # model. prefix 제거 (있을 경우)
-            clean_pretrained_weights = {}
-            for key, value in pretrained_weights.items():
-                if key.startswith('model.'):
-                    new_key = key[6:]  # "model." 제거
-                    clean_pretrained_weights[new_key] = value
-                else:
-                    clean_pretrained_weights[key] = value
-            
-            # 전체 레이어 strict=True로 로드 (헤드 포함)
-            self.model.load_state_dict(clean_pretrained_weights, strict=True)
-            print(f"✅ Pretrained weights loaded: {len(clean_pretrained_weights)} layers")
-            weights_loaded = True
-        else:
-            print(f"⚠️ Pretrained weights not found: {pretrained_path}")
-            print("   Cannot proceed without pretrained weights!")
-            return False
+            # 새로운 분류 헤드 추가
+            if hasattr(self.model, 'head'):
+                self.model.head = nn.Linear(self.model.head.in_features, self.num_classes)
+            elif hasattr(self.model, 'classifier'):
+                self.model.classifier = nn.Linear(self.model.classifier.in_features, self.num_classes)
+            else:
+                # ConvNeXtV2의 경우 head.fc를 직접 수정
+                if hasattr(self.model, 'head') and hasattr(self.model.head, 'fc'):
+                    self.model.head.fc = nn.Linear(self.model.head.fc.in_features, self.num_classes)
+        
+        # 가중치 로드 (분류 헤드 제외)
+        model_dict = self.model.state_dict()
+        pretrained_dict = {k: v for k, v in clean_pretrained_weights.items() 
+                          if k in model_dict and 'head' not in k and 'classifier' not in k}
+        
+        model_dict.update(pretrained_dict)
+        self.model.load_state_dict(model_dict, strict=True)
         
         self.model.to(self.device)
         self.model.eval()  # 추론 모드로 설정
         
         print(f"✅ Model created:")
         print(f"  - Architecture: {self.config.CONVNEXT_MODEL_NAME}")
-        print(f"  - Classes: {self.num_classes}")
+        print(f"  - Weight classes: {weight_num_classes}")
+        print(f"  - Dataset classes: {self.num_classes}")
         print(f"  - Image size: {self.config.CLASSIFICATION_SIZE}")
-        print(f"  - Pretrained: {'Yes' if weights_loaded else 'No'}")
+        print(f"  - Pretrained: Yes ({len(pretrained_dict)} layers)")
         
         return True
     
