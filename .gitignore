@@ -46,7 +46,7 @@ venv.bak/
 ehthumbs.db
 Thumbs.db
 
-# Model files (too large)
+# Model files (too large for GitHub)
 *.pth
 *.pt
 *.onnx
@@ -58,12 +58,8 @@ data/
 datasets/
 *.csv
 *.xlsx
-*.json
 dataset*/
 *_dataset/
-processed_dataset/
-pipeline_output/
-enhanced_pipeline_output/
 
 # Large image files  
 *.jpg
@@ -73,41 +69,24 @@ enhanced_pipeline_output/
 *.bmp
 *.tif
 
+# Output files
+outputs/
+results/
+experiments/
+*.log
+
 # Temporary files
 temp*/
 tmp*/
-cache/
 .cache/
-temp_wafer.jpg
-
-# Test files
-test_*/
-*_test/
-integration_*/
-
-# Logs
-logs/
-*.log
-wandb/
-mlruns/
-
-# Results
-results/
-outputs/
-experiments/
-checkpoints/
-saved_models/
-trained_models/
+*.bak
+*.del
+.deleted
 
 # Jupyter
 .ipynb_checkpoints
 
-# Backup files
-*.bak
-*.bak.*
-*.del
-
-# Unnecessary directories
-configs/
-data/
-notebooks/
+# Test files
+test_*/
+*_test/
+*_old.py
