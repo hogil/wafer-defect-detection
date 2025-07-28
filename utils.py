@@ -448,7 +448,7 @@ def create_sample_config() -> Dict[str, Any]:
         "description": "Sample configuration for different use cases",
         
         "high_speed_mode": {
-            "F1_THRESHOLD": 0.9,
+            "PRECISION_THRESHOLD": 0.9,
             "CONFIDENCE_THRESHOLD": 0.8,
             "MAPPING_THRESHOLD": 0.4,
             "max_roi_samples": 5,
@@ -456,7 +456,7 @@ def create_sample_config() -> Dict[str, Any]:
         },
         
         "high_accuracy_mode": {
-            "F1_THRESHOLD": 0.7,
+            "PRECISION_THRESHOLD": 0.7,
             "CONFIDENCE_THRESHOLD": 0.6,
             "MAPPING_THRESHOLD": 0.2,
             "max_roi_samples": 20,
@@ -464,7 +464,7 @@ def create_sample_config() -> Dict[str, Any]:
         },
         
         "balanced_mode": {
-            "F1_THRESHOLD": 0.8,
+            "PRECISION_THRESHOLD": 0.8,
             "CONFIDENCE_THRESHOLD": 0.7,
             "MAPPING_THRESHOLD": 0.3,
             "max_roi_samples": 10,

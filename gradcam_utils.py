@@ -9,6 +9,7 @@ from typing import Optional, Tuple
 import torch
 import torch.nn.functional as F
 import numpy as np
+import matplotlib.cm as cm
 
 logger = logging.getLogger(__name__)
 
@@ -267,7 +268,6 @@ def visualize_gradcam_overlay(
             image_norm = np.stack([image] * 3, axis=-1).astype(np.float32) / 255.0
         
         # 히트맵을 컬러맵으로 변환 (빨간색 계열)
-        import matplotlib.cm as cm
         colormap = cm.get_cmap('jet')
         heatmap_colored = colormap(heatmap)[:, :, :3]  # RGB만 사용
         

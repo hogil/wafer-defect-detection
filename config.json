@@ -1,25 +1,15 @@
 {
+  "DATASET_ROOT": "test_dataset",
+  "MODEL_PATH": "pretrained_models/convnextv2_base.fcmae_ft_in22k_in1k_pretrained.pth",
+  "YOLO_MODEL": "pretrained_models/yolo11x.pt",
+  "CLASSIFICATION_SIZE": 384,
+  "YOLO_SIZE": 1024,
+  "PRECISION_THRESHOLD": 0.8,
+  "CONFIDENCE_THRESHOLD": 0.7,
+  "MAPPING_THRESHOLD": 0.3,
+  "OUTPUT_DIR": "outputs",
   "description": "Default configuration for Wafer Defect Detection System",
   "version": "1.0.0",
-  
-  "paths": {
-    "DATASET_ROOT": "",
-    "MODEL_PATH": "pretrained_models/convnextv2_base.fcmae_ft_in22k_in1k_pretrained.pth",
-    "YOLO_MODEL": "pretrained_models/yolo11x.pt",
-    "OUTPUT_DIR": "outputs"
-  },
-  
-  "model_settings": {
-    "CLASSIFICATION_SIZE": 384,
-    "YOLO_SIZE": 1024
-  },
-  
-  "thresholds": {
-    "F1_THRESHOLD": 0.8,
-    "CONFIDENCE_THRESHOLD": 0.7,
-    "MAPPING_THRESHOLD": 0.3
-  },
-  
   "processing": {
     "max_roi_samples": 10,
     "max_mapping_samples": 30,
@@ -29,19 +19,16 @@
     "min_roi_area_ratio": 0.01,
     "yolo_confidence_threshold": 0.5
   },
-  
   "logging": {
     "level": "INFO",
     "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     "file": "wafer_detection.log"
   },
-  
   "visualization": {
     "gradcam_alpha": 0.4,
     "save_heatmaps": false,
     "save_roi_images": false
   },
-  
   "advanced": {
     "target_layer_name": "stages.3",
     "min_roi_size": 0.1,

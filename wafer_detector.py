@@ -21,8 +21,6 @@ from sklearn.metrics import precision_recall_fscore_support
 
 from gradcam_utils import GradCAMAnalyzer, extract_roi_from_heatmap
 
-# 로깅 설정
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
@@ -58,6 +56,7 @@ class WaferDetector:
         self.difficult_classes: List[str] = []
         self.class_object_mapping: Dict[str, str] = {}
         self.roi_patterns: Dict[str, Dict[str, float]] = {}
+        self.precision_scores: Optional[np.ndarray] = None
         self.f1_scores: Optional[np.ndarray] = None
         
         # 이미지 전처리
@@ -67,7 +66,7 @@ class WaferDetector:
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
         
-        logger.info(f"🚀 WaferDetector initialized - Device: {self.device}")
+        logger.info(f"WaferDetector initialized - Device: {self.device}")
     
     def load_models(self, model_path: Union[str, Path], yolo_path: Union[str, Path]) -> None:
         """
@@ -90,25 +89,30 @@ class WaferDetector:
             if not yolo_path.exists():
                 raise WaferDetectorError(f"YOLO model not found: {yolo_path}")
             
-            # 1. ConvNeXtV2 모델 생성
-            logger.info("Loading ConvNeXtV2 model...")
-            self.classification_model = timm.create_model(
-                'convnextv2_base.fcmae_ft_in22k_in1k', 
-                pretrained=True
-            )
-            
-            # 2. 가중치 로드 및 prefix 제거
+            # 1. 가중치 로드 및 prefix 제거
+            logger.info("Loading model weights...")
             state_dict = torch.load(model_path, map_location="cpu")
-            cleaned_state_dict = {k.replace('model.', ''): v for k, v in state_dict.items()}
             
-            # 3. 분류기 교체
+            # model prefix가 있는지 확인하고 제거
+            if any(k.startswith('model.') for k in state_dict.keys()):
+                cleaned_state_dict = {k.replace('model.', ''): v for k, v in state_dict.items()}
+                logger.info("Removed 'model.' prefix from state dict")
+            else:
+                cleaned_state_dict = state_dict
+                logger.info("No 'model.' prefix found in state dict")
+            
+            # 2. 클래스 수 결정 (pth 파일 기준)
             if 'head.fc.weight' not in cleaned_state_dict:
                 raise WaferDetectorError("Invalid model weights: missing head.fc.weight")
-                
             num_classes = cleaned_state_dict['head.fc.weight'].shape[0]
-            self.classification_model.head.fc = nn.Linear(
-                self.classification_model.head.fc.in_features, 
-                num_classes
+            logger.info(f"Detected {num_classes} classes from model weights")
+            
+            # 3. ConvNeXtV2 모델 생성 (pth 파일의 클래스 수로)
+            logger.info("Creating ConvNeXtV2 model...")
+            self.classification_model = timm.create_model(
+                'convnextv2_base.fcmae_ft_in22k_in1k', 
+                pretrained=False,  # 가중치를 직접 로드할 것이므로 False
+                num_classes=num_classes
             )
             
             # 4. 가중치 로드
@@ -119,7 +123,7 @@ class WaferDetector:
             self.gradcam_analyzer = GradCAMAnalyzer(self.classification_model)
             self.yolo_model = YOLO(str(yolo_path))
             
-            logger.info(f"✅ Models loaded successfully - Classes: {num_classes}")
+            logger.info(f"Models loaded successfully - Classes: {num_classes}")
             
         except Exception as e:
             raise WaferDetectorError(f"Failed to load models: {str(e)}")
@@ -145,7 +149,7 @@ class WaferDetector:
             if not self.classes:
                 raise WaferDetectorError("No classes found in dataset")
                 
-            logger.info(f"📋 Classes loaded: {self.classes}")
+            logger.info(f"Classes loaded: {self.classes}")
             
         except Exception as e:
             raise WaferDetectorError(f"Failed to load classes: {str(e)}")
@@ -158,7 +162,7 @@ class WaferDetector:
             dataset_root: 데이터셋 루트 경로
             
         Returns:
-            F1 스코어 배열
+            Precision 스코어 배열
             
         Raises:
             WaferDetectorError: 성능 분석 실패시
@@ -177,7 +181,7 @@ class WaferDetector:
             )
             self.classes = dataset.classes
             
-            logger.info(f"📊 Analyzing performance on {len(dataset)} samples...")
+            logger.info(f"Analyzing performance on {len(dataset)} samples...")
             
             # 예측 수행
             all_preds, all_labels = [], []
@@ -194,27 +198,42 @@ class WaferDetector:
                     if batch_idx % 10 == 0:
                         logger.info(f"Processed {batch_idx * 32}/{len(dataset)} samples")
             
-            # F1 score 계산
-            _, _, f1_scores, _ = precision_recall_fscore_support(
+            # 클래스 수 불일치 확인
+            model_classes = self.classification_model.head.fc.out_features
+            dataset_classes = len(self.classes)
+            
+            if model_classes != dataset_classes:
+                logger.warning(f"Model has {model_classes} classes but dataset has {dataset_classes} classes")
+                logger.warning("Performance analysis may not be accurate - using model's class indices")
+                
+                # 모델의 클래스 수에 맞게 예측값과 레이블 조정
+                adjusted_preds = [pred % dataset_classes for pred in all_preds]
+                adjusted_labels = [label % dataset_classes for label in all_labels]
+                all_preds = adjusted_preds
+                all_labels = adjusted_labels
+            
+            # Precision 계산
+            precision, _, f1_scores, _ = precision_recall_fscore_support(
                 all_labels, all_preds, average=None, zero_division=0
             )
+            self.precision_scores = precision
             self.f1_scores = f1_scores
             
-            # 어려운 클래스 식별
+            # 어려운 클래스 식별 (Precision 기준)
             self.difficult_classes = [
-                self.classes[i] for i, f1 in enumerate(f1_scores) 
-                if f1 < self.config['F1_THRESHOLD']
+                self.classes[i] for i, prec in enumerate(precision) 
+                if prec < self.config['PRECISION_THRESHOLD']
             ]
             
             # 결과 출력
             logger.info("Performance Analysis Results:")
-            for i, f1 in enumerate(f1_scores):
-                status = "⚠️" if f1 < self.config['F1_THRESHOLD'] else "✅"
-                logger.info(f"   {status} {self.classes[i]}: F1={f1:.3f}")
+            for i, (prec, f1) in enumerate(zip(precision, f1_scores)):
+                status = "WARNING" if prec < self.config['PRECISION_THRESHOLD'] else "OK"
+                logger.info(f"   {status} {self.classes[i]}: Precision={prec:.3f}, F1={f1:.3f}")
             
             logger.info(f"Identified {len(self.difficult_classes)} difficult classes")
             
-            return f1_scores
+            return precision
             
         except Exception as e:
             raise WaferDetectorError(f"Performance analysis failed: {str(e)}")
@@ -232,14 +251,14 @@ class WaferDetector:
         """
         try:
             if not self.difficult_classes:
-                logger.info("ℹ️ No difficult classes found, skipping ROI pattern learning")
+                logger.info("No difficult classes found, skipping ROI pattern learning")
                 return
                 
             if self.gradcam_analyzer is None:
                 raise WaferDetectorError("GradCAM analyzer not initialized")
             
             dataset_root = Path(dataset_root)
-            logger.info(f"🧠 Learning ROI patterns for {len(self.difficult_classes)} classes...")
+            logger.info(f"Learning ROI patterns for {len(self.difficult_classes)} classes...")
             
             for class_name in self.difficult_classes:
                 try:
@@ -283,7 +302,7 @@ class WaferDetector:
                             'y2': float(representative_roi[3])
                         }
                         
-                        logger.info(f"📍 {class_name}: ROI learned from {processed_count} samples")
+                        logger.info(f"{class_name}: ROI learned from {processed_count} samples")
                     else:
                         logger.warning(f"Failed to learn ROI pattern for {class_name}")
                         
@@ -307,14 +326,14 @@ class WaferDetector:
         """
         try:
             if not self.difficult_classes or not self.roi_patterns:
-                logger.info("ℹ️ No difficult classes or ROI patterns, skipping mapping creation")
+                logger.info("No difficult classes or ROI patterns, skipping mapping creation")
                 return
                 
             if self.yolo_model is None:
                 raise WaferDetectorError("YOLO model not loaded")
             
             dataset_root = Path(dataset_root)
-            logger.info(f"🎯 Creating object mappings...")
+            logger.info(f"Creating object mappings...")
             
             class_object_counts = {}
             
@@ -385,7 +404,7 @@ class WaferDetector:
                     if ratio >= self.config['MAPPING_THRESHOLD']:
                         self.class_object_mapping[class_name] = best_obj
                         mapping_created += 1
-                        logger.info(f"🎯 {class_name} → {best_obj} ({ratio:.2f})")
+                        logger.info(f"{class_name} -> {best_obj} ({ratio:.2f})")
                     else:
                         logger.warning(f"Low confidence mapping for {class_name}: {ratio:.2f}")
                         
@@ -426,6 +445,13 @@ class WaferDetector:
                 probabilities = torch.softmax(outputs, dim=1).cpu().numpy()[0]
                 predicted_idx = np.argmax(probabilities)
                 confidence = float(probabilities[predicted_idx])
+                
+                # 모델의 클래스 수와 데이터셋 클래스 수가 다를 때 처리
+                if predicted_idx >= len(self.classes):
+                    logger.warning(f"Predicted class index {predicted_idx} exceeds dataset classes {len(self.classes)}")
+                    # 모델의 클래스 인덱스를 데이터셋 클래스로 매핑
+                    predicted_idx = predicted_idx % len(self.classes)
+                
                 predicted_class = self.classes[predicted_idx]
             
             result = {
@@ -438,13 +464,16 @@ class WaferDetector:
             # ROI 검증 조건 확인
             needs_roi = (
                 predicted_class in self.difficult_classes and
-                confidence < self.config['CONFIDENCE_THRESHOLD'] and
-                predicted_class in self.class_object_mapping and
-                predicted_class in self.roi_patterns
+                confidence < self.config['CONFIDENCE_THRESHOLD']
             )
             
             if needs_roi:
                 try:
+                    # ROI 패턴 확인
+                    if predicted_class not in self.roi_patterns:
+                        logger.warning(f"No ROI pattern for {predicted_class}, skipping ROI analysis")
+                        return result
+                    
                     # ROI에서 객체 검출
                     w, h = image.size
                     roi = self.roi_patterns[predicted_class]
@@ -473,7 +502,7 @@ class WaferDetector:
                             if object_counts:
                                 most_detected_obj = max(object_counts.items(), key=lambda x: x[1])[0]
                                 
-                                # 역매핑
+                                # 모든 매핑에서 해당 객체 찾기
                                 for mapped_class, mapped_obj in self.class_object_mapping.items():
                                     if mapped_obj == most_detected_obj:
                                         result.update({
@@ -482,9 +511,13 @@ class WaferDetector:
                                             'method': 'roi_enhanced',
                                             'detected_object': most_detected_obj,
                                             'object_counts': object_counts,
-                                            'roi_coordinates': roi
+                                            'roi_coordinates': roi,
+                                            'original_prediction': predicted_class
                                         })
                                         break
+                                else:
+                                    # 매핑되지 않은 객체인 경우 기본 결과 유지
+                                    logger.info(f"Detected object '{most_detected_obj}' not found in mappings")
                         
                 except Exception as e:
                     logger.warning(f"ROI processing failed: {str(e)}")
@@ -549,6 +582,7 @@ class WaferDetector:
             mapping_data = {
                 'difficult_classes': self.difficult_classes,
                 'class_object_mapping': self.class_object_mapping,
+                'precision_scores': self.precision_scores.tolist() if self.precision_scores is not None else None,
                 'f1_scores': self.f1_scores.tolist() if self.f1_scores is not None else None,
                 'config': self.config
             }
@@ -556,7 +590,7 @@ class WaferDetector:
             with open(mapping_file, 'w') as f:
                 json.dump(mapping_data, f, indent=2)
             
-            logger.info(f"💾 Results saved to {output_path}")
+            logger.info(f"Results saved to {output_path}")
             
         except Exception as e:
             raise WaferDetectorError(f"Failed to save results: {str(e)}")

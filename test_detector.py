@@ -31,7 +31,7 @@ class TestWaferDetector(unittest.TestCase):
         self.config = {
             'CLASSIFICATION_SIZE': 224,
             'YOLO_SIZE': 640,
-            'F1_THRESHOLD': 0.8,
+            'PRECISION_THRESHOLD': 0.8,
             'CONFIDENCE_THRESHOLD': 0.7,
             'MAPPING_THRESHOLD': 0.3,
             'OUTPUT_DIR': 'test_output'
@@ -146,7 +146,7 @@ class TestUtils(unittest.TestCase):
         # 각 모드별 설정 확인
         for mode in ['high_speed_mode', 'high_accuracy_mode', 'balanced_mode']:
             mode_config = config[mode]
-            self.assertIn('F1_THRESHOLD', mode_config)
+            self.assertIn('PRECISION_THRESHOLD', mode_config)
             self.assertIn('CONFIDENCE_THRESHOLD', mode_config)
     
     def test_validate_dataset_structure_empty(self):
@@ -191,7 +191,7 @@ class TestIntegration(unittest.TestCase):
         self.config = {
             'CLASSIFICATION_SIZE': 224,
             'YOLO_SIZE': 640,
-            'F1_THRESHOLD': 0.8,
+            'PRECISION_THRESHOLD': 0.8,
             'CONFIDENCE_THRESHOLD': 0.7,
             'MAPPING_THRESHOLD': 0.3,
             'OUTPUT_DIR': str(self.temp_path / 'output')
@@ -264,7 +264,7 @@ class TestErrorHandling(unittest.TestCase):
         config = {
             'CLASSIFICATION_SIZE': 224,
             'YOLO_SIZE': 640,
-            'F1_THRESHOLD': 0.8,
+            'PRECISION_THRESHOLD': 0.8,
             'CONFIDENCE_THRESHOLD': 0.7,
             'MAPPING_THRESHOLD': 0.3
         }
@@ -307,7 +307,7 @@ def run_performance_test():
     config = {
         'CLASSIFICATION_SIZE': 224,
         'YOLO_SIZE': 640,
-        'F1_THRESHOLD': 0.8,
+        'PRECISION_THRESHOLD': 0.8,
         'CONFIDENCE_THRESHOLD': 0.7,
         'MAPPING_THRESHOLD': 0.3
     }

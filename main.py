@@ -32,7 +32,7 @@ DEFAULT_CONFIG = {
     'YOLO_MODEL': 'pretrained_models/yolo11x.pt',
     'CLASSIFICATION_SIZE': 384,
     'YOLO_SIZE': 1024,
-    'F1_THRESHOLD': 0.8,
+    'PRECISION_THRESHOLD': 0.8,
     'CONFIDENCE_THRESHOLD': 0.7,
     'MAPPING_THRESHOLD': 0.3,
     'OUTPUT_DIR': 'outputs'
@@ -108,7 +108,7 @@ def validate_config(config: Dict[str, Any]) -> None:
         raise ValueError(f"YOLO model not found: {yolo_path}")
     
     # 임계값 범위 확인
-    thresholds = ['F1_THRESHOLD', 'CONFIDENCE_THRESHOLD', 'MAPPING_THRESHOLD']
+    thresholds = ['PRECISION_THRESHOLD', 'CONFIDENCE_THRESHOLD', 'MAPPING_THRESHOLD']
     for key in thresholds:
         if key in config:
             value = config[key]
@@ -126,7 +126,7 @@ def run_full_pipeline(detector: WaferDetector, dataset_root: str, config: Dict[s
         config: 설정 딕셔너리
     """
     try:
-        logger.info("🎯 Starting full pipeline...")
+        logger.info("Starting full pipeline...")
         
         # Stage 1: 성능 분석
         logger.info("Stage 1: Performance Analysis")
@@ -146,11 +146,11 @@ def run_full_pipeline(detector: WaferDetector, dataset_root: str, config: Dict[s
         
         # 통계 출력
         stats = detector.get_stats()
-        logger.info("📊 Pipeline Statistics:")
+        logger.info("Pipeline Statistics:")
         for key, value in stats.items():
             logger.info(f"   {key}: {value}")
         
-        logger.info("✅ Full pipeline completed successfully!")
+        logger.info("Full pipeline completed successfully!")
         
     except Exception as e:
         logger.error(f"Pipeline failed: {str(e)}")
@@ -187,7 +187,7 @@ def run_prediction_mode(
         
         if predict_path.is_file():
             # 단일 이미지 예측
-            logger.info(f"🔍 Predicting single image: {predict_path}")
+            logger.info(f"Predicting single image: {predict_path}")
             
             if not detector.classes:
                 if not config['DATASET_ROOT']:
@@ -197,7 +197,7 @@ def run_prediction_mode(
             result = detector.predict_image(str(predict_path))
             
             # 결과 출력
-            logger.info("🎯 Prediction Result:")
+            logger.info("Prediction Result:")
             logger.info(f"   Image: {result['image_path']}")
             logger.info(f"   Predicted Class: {result['predicted_class']}")
             logger.info(f"   Confidence: {result['confidence']:.3f}")
@@ -209,7 +209,7 @@ def run_prediction_mode(
             
         elif predict_path.is_dir():
             # 폴더 예측
-            logger.info(f"🔍 Predicting folder: {predict_path}")
+            logger.info(f"Predicting folder: {predict_path}")
             
             # 이미지 파일 수집
             image_files = []
@@ -267,7 +267,7 @@ def run_prediction_mode(
                 json.dump(results, f, indent=2)
             
             # 통계 출력
-            logger.info("📊 Batch Prediction Results:")
+            logger.info("Batch Prediction Results:")
             logger.info(f"   Total Images: {len(image_files)}")
             logger.info(f"   Successful Predictions: {len(results)}")
             logger.info(f"   Classification Only: {method_counts['classification_only']}")
@@ -365,7 +365,7 @@ Examples:
         # 설정 저장 (업데이트된 경우)
         save_config(config, config_path)
         
-        logger.info("🚀 Starting Wafer Defect Detection System")
+        logger.info("Starting Wafer Defect Detection System")
         logger.info(f"Configuration: {config}")
         
         # 검출기 초기화
@@ -383,7 +383,7 @@ Examples:
                                "Provide as argument or set DATASET_ROOT in config.")
             run_full_pipeline(detector, config['DATASET_ROOT'], config)
         
-        logger.info("🎉 Process completed successfully!")
+        logger.info("Process completed successfully!")
         
     except KeyboardInterrupt:
         logger.info("Process interrupted by user")
