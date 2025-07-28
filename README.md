@@ -1,282 +1,221 @@
 # 🎯 Wafer Defect Detection with ROI Enhancement
 
-**ConvNeXtV2 + YOLO + Grad-CAM을 결합한 2단계 웨이퍼 결함 검출 시스템**
+**지능형 2단계 웨이퍼 결함 검출 시스템: "어려운 클래스는 더 정밀하게"**
 
 ---
 
 ## 💡 핵심 개념
 
-### **문제 정의**
-일반적인 분류 모델은 모든 클래스를 동일하게 처리하여, 특정 "어려운 클래스"에서 낮은 성능을 보입니다. 이 시스템은 **"어려운 클래스는 더 정밀하게"** 처리하는 선택적 접근법을 구현합니다.
+### **문제 인식**
+기존의 일반적인 분류 모델은 모든 클래스를 동일한 방식으로 처리합니다. 이로 인해 특정 "어려운 클래스"에서는 낮은 성능을 보이는 한계가 있습니다. 특히 웨이퍼 결함 검출에서는 미세한 크랙이나 작은 오염 등이 정상 클래스에 비해 훨씬 분류하기 어려운 특성을 가집니다.
 
-### **핵심 아이디어**
-```
-기존 방식: 모든 클래스 → 동일한 분류 모델 → 결과
-새로운 방식: 쉬운 클래스 → 기본 분류 → 결과
-           어려운 클래스 → 기본 분류 + ROI 강화 → 재분류 → 결과
-```
+### **해결 아이디어**
+"모든 클래스를 동일하게 처리하지 말고, 어려운 클래스에 대해서는 더 정밀한 분석을 적용하자"
+
+이 시스템은 **선택적 정밀도** 개념을 도입하여, 성능이 낮은 클래스에 대해서만 추가적인 ROI 기반 재분류를 수행합니다.
 
 ---
 
 ## 🏗️ 시스템 아키텍처
 
-### **2단계 검출 파이프라인**
+### **2단계 지능형 검출 파이프라인**
 
-#### **Stage 1: 성능 기반 클래스 분류**
-```python
-# 1. 전체 데이터셋으로 성능 분석
-for each_class:
-    f1_score = evaluate_classification_performance(class)
-    if f1_score < threshold:  # 기본값: 0.8
-        difficult_classes.append(class)
+#### **1단계: 성능 기반 클래스 분류**
+시스템은 먼저 전체 데이터셋에서 각 클래스별 성능을 분석합니다. F1 score가 임계값(기본 0.8) 미만인 클래스들을 "어려운 클래스"로 자동 식별합니다.
 
-# 결과: ['crack', 'contamination'] ← F1 < 0.8인 클래스들
-```
+**예시:**
+- normal 클래스: F1 = 0.95 → 쉬운 클래스
+- crack 클래스: F1 = 0.73 → 어려운 클래스  
+- contamination 클래스: F1 = 0.71 → 어려운 클래스
+- scratch 클래스: F1 = 0.82 → 쉬운 클래스
 
-#### **Stage 2: ROI 기반 재분류 (어려운 클래스만)**
-```python
-# 2. 어려운 클래스별 ROI 패턴 학습
-for difficult_class in ['crack', 'contamination']:
-    roi_patterns[difficult_class] = learn_gradcam_roi_pattern(difficult_class)
+#### **2단계: ROI 기반 정밀 재분류**
+어려운 클래스로 분류된 항목들에 대해서만 추가적인 정밀 분석을 수행합니다.
 
-# 3. 클래스-객체 매핑 구축
-for difficult_class in ['crack', 'contamination']:
-    roi_region = extract_roi_using_pattern(image, difficult_class)
-    detected_objects = yolo_detect(roi_region)
-    class_object_mapping[difficult_class] = most_frequent_object
+**ROI 패턴 학습:**
+- Grad-CAM을 사용하여 모델이 실제로 주목하는 영역을 분석
+- 각 어려운 클래스별로 대표적인 관심 영역(ROI) 패턴을 학습
+- 통계적 방법으로 클래스별 ROI 좌표를 결정
 
-# 예시: {'crack': 'line', 'contamination': 'blob'}
-```
+**클래스-객체 매핑 구축:**
+- 각 클래스의 ROI 영역에서 YOLO를 사용한 객체 검출 수행
+- 클래스별로 가장 빈번하게 검출되는 객체 타입을 매핑
+- 임계값(기본 30%) 이상의 신뢰도를 가진 매핑만 저장
 
 ---
 
-## 🔍 핵심 구현 로직
+## 📊 구체적 동작 시나리오
 
-### **예측 시 동작 흐름**
-```python
-def predict_image(image_path):
-    # 1. 기본 ConvNeXtV2 분류
-    predicted_class, confidence = classify_with_convnext(image)
-    
-    # 2. ROI 검증 필요 조건 (3가지 모두 만족)
-    needs_roi = (
-        predicted_class in difficult_classes and      # F1 < 0.8
-        confidence < confidence_threshold and         # 낮은 신뢰도 (0.7)
-        predicted_class in class_object_mapping       # 매핑 존재
-    )
-    
-    # 3. ROI 강화 재분류 (조건 만족시)
-    if needs_roi:
-        roi_image = extract_roi_using_learned_pattern(image, predicted_class)
-        detected_objects = yolo_detect(roi_image)
-        most_common_object = max(detected_objects, key=count)
-        
-        # 역매핑으로 최종 클래스 결정
-        final_class = reverse_mapping[most_common_object]
-        return final_class, high_confidence
-    
-    return predicted_class, confidence
-```
+### **시나리오 1: 쉬운 클래스 (1단계만 사용)**
 
-### **ROI 패턴 학습 과정**
-```python
-def learn_roi_patterns():
-    for class_name in difficult_classes:
-        roi_coordinates = []
-        
-        # 클래스당 10개 샘플로 Grad-CAM 분석
-        for sample_image in class_samples[:10]:
-            heatmap = gradcam.generate_gradcam(sample_image, class_name)
-            roi_coords = extract_top_80_percent_region(heatmap)
-            roi_coordinates.append(roi_coords)
-        
-        # 중앙값으로 대표 ROI 좌표 계산
-        representative_roi = median(roi_coordinates)
-        roi_patterns[class_name] = representative_roi
-```
+**상황:** 정상 웨이퍼 이미지 입력
+- 분류 결과: "normal" 클래스
+- 신뢰도: 92%
+- 해당 클래스 성능: F1 = 0.95 (임계값 0.8 초과)
 
----
+**시스템 동작:**
+1. 기본 ConvNeXtV2 분류 수행
+2. 높은 성능의 쉬운 클래스로 판단
+3. 추가 검증 없이 결과 반환
 
-## 📊 구체적 동작 예시
+**최종 결과:** 
+- 예측 클래스: normal
+- 신뢰도: 92%
+- 사용 방법: 기본 분류만
 
-### **Case 1: 쉬운 클래스 (Stage 1만 사용)**
-```python
-# 입력: normal_wafer.jpg
-predicted_class = "normal"
-confidence = 0.92
-f1_score = 0.95  # > 0.8 (쉬운 클래스)
+### **시나리오 2: 어려운 클래스 (2단계 모두 사용)**
 
-# 결과: ROI 검증 불필요, 바로 반환
-result = {
-    'predicted_class': 'normal',
-    'confidence': 0.92,
-    'method': 'classification_only'
-}
-```
+**상황:** 크랙이 있는 웨이퍼 이미지 입력
+- 초기 분류 결과: "crack" 클래스  
+- 신뢰도: 65% (임계값 70% 미만)
+- 해당 클래스 성능: F1 = 0.73 (임계값 0.8 미만)
 
-### **Case 2: 어려운 클래스 (Stage 2 적용)**
-```python
-# 입력: crack_wafer.jpg
-predicted_class = "crack"
-confidence = 0.65  # < 0.7 (낮은 신뢰도)
-f1_score = 0.75    # < 0.8 (어려운 클래스)
+**시스템 동작:**
+1. 기본 ConvNeXtV2 분류 수행 → "crack" 예측
+2. 어려운 클래스 + 낮은 신뢰도 확인
+3. 사전 학습된 crack 클래스의 ROI 패턴 적용
+4. ROI 영역에서 YOLO 객체 검출 수행
+5. 검출된 객체: "line" 5개, "blob" 1개
+6. 가장 많은 "line" 객체를 기반으로 매핑 테이블 참조
+7. "line" → "crack" 매핑 확인 후 최종 분류
 
-# ROI 검증 실행
-roi_region = extract_roi(image, roi_patterns['crack'])
-detected_objects = yolo_detect(roi_region)
-# → {'line': 5개, 'blob': 1개}
+**최종 결과:**
+- 예측 클래스: crack (확정)
+- 신뢰도: 90% (ROI 기반 높은 신뢰도)
+- 사용 방법: ROI 강화 검출
+- 검출된 객체: line
 
-most_common = 'line'
-mapped_class = reverse_mapping['line']  # 'crack'
+### **시나리오 3: 클래스 변경 케이스**
 
-result = {
-    'predicted_class': 'crack',
-    'confidence': 0.9,
-    'method': 'roi_enhanced',
-    'detected_object': 'line'
-}
-```
+**상황:** 잘못 분류된 오염 웨이퍼
+- 초기 분류 결과: "scratch" 클래스
+- 신뢰도: 68% (임계값 미만)  
+- scratch 클래스: F1 = 0.72 (어려운 클래스)
+
+**시스템 동작:**
+1. ROI 영역에서 객체 검출 수행
+2. 검출된 객체: "blob" 8개, "line" 1개
+3. 가장 많은 "blob" 객체 확인
+4. 매핑 테이블에서 "blob" → "contamination" 매핑 발견
+5. 최종 클래스를 "contamination"으로 변경
+
+**최종 결과:**
+- 예측 클래스: contamination (변경됨!)
+- 신뢰도: 90%
+- 사용 방법: ROI 강화 검출
+- 검출된 객체: blob
 
 ---
 
-## 🧠 Grad-CAM ROI 추출 개념
+## 🧠 ROI 추출 원리
 
-### **모델 Attention 기반 ROI**
-```python
-# 기존 방식: 고정된 중앙 영역 사용
-roi = image[center-100:center+100, center-100:center+100]
+### **기존 방식의 한계**
+대부분의 시스템은 고정된 중앙 영역이나 전체 이미지를 동일하게 분석합니다. 이는 각 결함 유형별로 다른 위치적 특성을 고려하지 못하는 한계가 있습니다.
 
-# 새로운 방식: 모델이 실제로 보는 영역 사용
-heatmap = gradcam.generate(image, target_class='crack')
-roi_coords = extract_attention_region(heatmap, top_80_percent)
-roi = image[roi_coords.y1:roi_coords.y2, roi_coords.x1:roi_coords.x2]
-```
+### **Grad-CAM 기반 동적 ROI**
+이 시스템은 Grad-CAM을 활용하여 **모델이 실제로 주목하는 영역**을 추출합니다:
 
-### **클래스별 다른 ROI 패턴**
-```python
-# 학습된 ROI 패턴 예시
-roi_patterns = {
-    'crack': {'x1': 0.25, 'y1': 0.15, 'x2': 0.75, 'y2': 0.85},      # 세로로 긴 영역
-    'contamination': {'x1': 0.10, 'y1': 0.20, 'x2': 0.90, 'y2': 0.80}, # 넓은 영역  
-    'scratch': {'x1': 0.30, 'y1': 0.30, 'x2': 0.70, 'y2': 0.70}     # 중앙 영역
-}
-```
+1. **클래스별 attention 분석**: 각 어려운 클래스에 대해 모델이 중요하게 보는 영역을 분석
+2. **통계적 ROI 결정**: 여러 샘플의 attention 영역을 분석하여 대표적인 ROI 패턴 도출
+3. **동적 적용**: 예측 시 해당 클래스의 학습된 ROI 패턴을 동적으로 적용
+
+### **클래스별 ROI 특성 예시**
+- **crack 클래스**: 주로 웨이퍼의 중앙-상단 영역에 attention 집중 (세로로 긴 형태)
+- **contamination 클래스**: 웨이퍼 전체 영역에 분산된 attention (넓은 영역)
+- **scratch 클래스**: 중앙 영역에 집중된 attention (정사각형 형태)
 
 ---
 
-## 📈 클래스-객체 매핑 구축
+## 📈 클래스-객체 매핑 체계
 
-### **데이터 기반 매핑 생성**
-```python
-# 각 어려운 클래스의 ROI에서 객체 검출 통계
-for class_name in ['crack', 'contamination']:
-    object_counts = {}
-    
-    for sample_image in class_samples:
-        roi_image = extract_roi(sample_image, class_name)
-        detected_objects = yolo_detect(roi_image)
-        
-        for obj in detected_objects:
-            object_counts[obj.name] += 1
-    
-    # 가장 빈번한 객체로 매핑 (임계값 30% 이상)
-    most_frequent = max(object_counts.items())
-    if most_frequent.ratio > 0.3:
-        class_object_mapping[class_name] = most_frequent.object
+### **데이터 기반 매핑 구축**
+시스템은 각 어려운 클래스의 ROI 영역에서 실제로 검출되는 객체들의 통계를 분석합니다:
 
-# 결과 예시:
-# {'crack': 'line', 'contamination': 'blob'}
-```
+**예시 분석 결과:**
+- crack 클래스 ROI에서: "line" 객체 90%, "blob" 객체 8%, "spot" 객체 2%
+- contamination 클래스 ROI에서: "blob" 객체 76%, "spot" 객체 20%, "line" 객체 4%
+
+**매핑 규칙:**
+- 임계값(30%) 이상의 빈도를 가진 객체만 매핑 대상
+- 가장 빈번한 객체를 해당 클래스의 대표 객체로 설정
+
+**최종 매핑 테이블:**
+- crack ↔ line (90% 신뢰도)
+- contamination ↔ blob (76% 신뢰도)
 
 ### **역매핑을 통한 재분류**
-```python
-# 예측 시 객체 → 클래스 역매핑
-detected_object = 'line'
-reverse_mapping = {'line': 'crack', 'blob': 'contamination'}
-final_class = reverse_mapping[detected_object]  # 'crack'
-```
+예측 시에는 검출된 객체를 기반으로 매핑 테이블을 역으로 참조하여 최종 클래스를 결정합니다.
 
 ---
 
-## 🔧 코드 구조
+## 🎯 조건부 정밀 분석
 
-### **파일별 역할**
-```
-main.py (80줄)
-├── 파이프라인 실행 제어
-├── 명령행 인자 처리  
-└── 예측/학습 모드 분기
+### **ROI 검증 실행 조건**
+시스템은 다음 3가지 조건을 모두 만족할 때만 추가적인 ROI 기반 분석을 수행합니다:
 
-wafer_detector.py (150줄)
-├── WaferDetector 클래스 (핵심 로직)
-├── 모델 로딩 및 성능 분석
-├── ROI 패턴 학습
-├── 클래스-객체 매핑 생성
-└── 이미지 예측 (2단계 로직)
+1. **성능 조건**: 예측된 클래스가 어려운 클래스 목록에 포함 (F1 < 0.8)
+2. **신뢰도 조건**: 분류 신뢰도가 임계값 미만 (기본 70%)  
+3. **매핑 조건**: 해당 클래스에 대한 객체 매핑이 존재
 
-gradcam_utils.py (60줄)  
-├── GradCAMAnalyzer 클래스
-├── Hook 기반 gradient 추출
-├── 히트맵 생성 및 ROI 좌표 계산
-└── 최소한의 구현 (실패시 즉시 에러)
-```
-
-### **주요 설정값**
-```python
-CONFIG = {
-    'F1_THRESHOLD': 0.8,           # 어려운 클래스 판정 기준
-    'CONFIDENCE_THRESHOLD': 0.7,   # ROI 검증 사용 기준
-    'MAPPING_THRESHOLD': 0.3,      # 클래스-객체 매핑 신뢰도
-    'CLASSIFICATION_SIZE': 384,    # ConvNeXtV2 입력 크기
-    'YOLO_SIZE': 1024             # YOLO 입력 크기
-}
-```
+### **효율성 보장**
+이러한 조건부 적용을 통해:
+- 쉬운 클래스는 빠른 기본 분류로 충분한 성능 달성
+- 어려운 클래스만 정밀한 2단계 분석 적용
+- 전체 시스템의 효율성과 정확도를 동시에 확보
 
 ---
 
-## 🎯 실행 방법
+## 🔧 시스템 설정
 
-### **전체 파이프라인 (학습 + 분석)**
-```bash
-python main.py dataset_path/
+### **주요 임계값들**
+- **F1 임계값 (0.8)**: 어려운 클래스를 판정하는 기준
+- **신뢰도 임계값 (0.7)**: ROI 검증을 실행하는 신뢰도 기준
+- **매핑 임계값 (0.3)**: 클래스-객체 매핑을 생성하는 최소 빈도
 
-# 실행 순서:
-# 1. 성능 분석 → difficult_classes 식별
-# 2. ROI 패턴 학습 → roi_patterns.json 생성
-# 3. 클래스-객체 매핑 → class_mapping.json 생성
-```
-
-### **예측만 실행**
-```bash
-# 단일 이미지
-python main.py --predict wafer.jpg
-
-# 폴더 배치 예측  
-python main.py --predict test_images/
-```
-
-### **데이터셋 구조**
-```
-dataset/
-├── normal/          # F1 > 0.8 (쉬운 클래스)
-├── crack/           # F1 < 0.8 (어려운 클래스)
-├── contamination/   # F1 < 0.8 (어려운 클래스)  
-└── scratch/         # F1 값에 따라 분류됨
-```
+### **임계값별 영향**
+- F1 임계값을 높이면: 더 많은 클래스가 "어려운" 클래스로 분류
+- 신뢰도 임계값을 낮추면: ROI 검증이 더 자주 실행
+- 매핑 임계값을 높이면: 더 확실한 매핑만 생성
 
 ---
 
-## 💻 핵심 알고리즘 요약
+## 🚀 사용 시나리오
 
-### **선택적 정밀도 검출**
-1. **성능 기반 분류**: F1 score로 어려운 클래스 자동 식별
-2. **Attention 기반 ROI**: Grad-CAM으로 모델이 실제 보는 영역 추출  
-3. **객체 기반 재분류**: ROI에서 YOLO 검출 → 통계 기반 매핑
-4. **조건부 적용**: 3가지 조건 만족시에만 ROI 검증 실행
+### **데이터셋 요구사항**
+표준 ImageFolder 구조로 클래스별 폴더 분리:
+- normal/ (정상 웨이퍼 이미지들)
+- crack/ (크랙 결함 이미지들)  
+- contamination/ (오염 결함 이미지들)
+- scratch/ (스크래치 결함 이미지들)
 
-### **효율성 원칙**
-- **쉬운 클래스**: 빠른 기본 분류로 충분
-- **어려운 클래스**: 정밀한 2단계 검출 적용
-- **실패시 즉시 에러**: 과도한 방어 코드 제거로 290줄 달성
+### **실행 모드**
 
-이 시스템은 **모든 클래스를 동일하게 처리하는 기존 방식의 한계**를 극복하고, **필요한 곳에만 정밀 분석을 적용**하는 지능형 접근법을 구현합니다.
+**학습 모드 (전체 파이프라인):**
+1. 성능 분석을 통한 어려운 클래스 식별
+2. Grad-CAM 기반 ROI 패턴 학습
+3. 클래스-객체 매핑 테이블 구축
+4. 결과 파일 저장 (ROI 패턴, 매핑 테이블)
+
+**예측 모드:**
+- 단일 이미지: 학습된 패턴을 사용하여 2단계 검출 수행
+- 배치 예측: 여러 이미지에 대해 일괄 처리 및 결과 저장
+
+---
+
+## 💻 시스템 특징
+
+### **지능형 선택적 처리**
+모든 입력에 대해 동일한 처리를 하지 않고, 필요에 따라 적응적으로 정밀도를 조절합니다.
+
+### **데이터 기반 학습**
+ROI 패턴과 클래스-객체 매핑을 실제 데이터의 통계적 분석을 통해 자동으로 구축합니다.
+
+### **해석 가능한 AI**
+Grad-CAM을 통해 모델의 판단 근거를 시각적으로 해석할 수 있으며, 검출된 객체 정보를 제공합니다.
+
+### **실용적 효율성**
+조건부 적용을 통해 계산 복잡도를 최소화하면서 필요한 곳에만 정밀 분석을 집중합니다.
+
+---
+
+이 시스템은 **"모든 클래스를 동일하게 처리하는 기존 방식"**을 벗어나 **"어려운 클래스는 더 정밀하게"** 처리하는 지능형 접근법을 통해 웨이퍼 결함 검출의 새로운 패러다임을 제시합니다.
