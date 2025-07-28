@@ -1,9 +1,10 @@
 # 🎯 Wafer Defect Detection System
 
-**웨이퍼 불량 검출을 위한 AI 시스템**
+**웨이퍼 불량 검출을 위한 AI 추론 시스템**
 
 [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-red.svg)](https://pytorch.org/)
+[![CUDA](https://img.shields.io/badge/CUDA-Required-green.svg)](https://developer.nvidia.com/cuda-toolkit)
 
 ## 🚀 핵심 특징
 
@@ -11,17 +12,23 @@
 - **📊 자동 데이터 인식**: 폴더명에서 클래스 자동 추출  
 - **🎯 ROI 클래스 변경**: 객체 검출로 직접 클래스 변경
 - **📊 2단계 성능 분석**: Classification Only vs ROI Enhanced
-- **🎪 간단한 사용법**: 데이터셋만 있으면 즉시 사용
+- **🧠 Grad-CAM 기반 ROI**: 각 클래스별 attention 영역 자동 학습
+- **⚡ 추론 전용**: 사전 훈련된 가중치 로드 후 즉시 추론
+- **🚀 GPU 최적화**: CUDA 필수, DataLoader 최적화 (pin_memory, num_workers)
 
 ## 🏗️ 시스템 아키텍처
 
-### 🔄 전체 파이프라인
+### 🔄 전체 파이프라인 (추론 전용)
 ```
 📂 ImageFolder 데이터셋 생성 
     ↓
-🏋️ ConvNeXtV2 모델 훈련
+🤖 사전 훈련된 ConvNeXtV2 가중치 로드 (strict=True)
     ↓
-📊 Classification Only 성능 측정
+📊 Classification Only 성능 측정 (전수 실행)
+    ↓
+🎯 어려운 클래스 식별 (F1 < 0.75)
+    ↓
+🧠 Grad-CAM으로 각 클래스별 attention 영역 학습
     ↓
 🔍 YOLO11x 객체 검출
     ↓
@@ -29,7 +36,7 @@
     ↓
 📊 ROI Enhanced 성능 측정
     ↓
-🔍 오류 분석 & 저장
+📋 성능 비교 리포트 & 저장
 ```
 
 ### 🎯 ROI 클래스 변경 시스템
@@ -249,7 +256,7 @@ roi_crop_to_2048x2048()          # Config 기반 ✅
 ### ConvNeXtV2 분류
 - **아키텍처**: ConvNeXtV2 Base (timm)
 - **입력**: 384×384 RGB 이미지
-- **출력**: 클래스별 확률 분포  
+- **출력**: 클래스별 확률 분포
 - **역할**: 1차 분류 예측 + ROI 중심점 검출용
 
 ### YOLO11x 객체 검출
@@ -292,6 +299,78 @@ roi_crop_to_2048x2048()          # Config 기반 ✅
 - **고해상도 보존**: 작은 이미지에서 위치만 학습하고 원본에서 손상없이 추출
 - **자동 학습**: 훈련 완료 후 자동으로 각 클래스의 ROI 패턴을 학습하여 저장
 
+## 🚀 사용법
+
+### 📋 시스템 요구사항
+- **Python**: 3.8+
+- **CUDA**: 필수 (GPU 환경)
+- **PyTorch**: 2.0+
+- **메모리**: 최소 8GB RAM, GPU VRAM 4GB+
+
+### 🔧 설치
+```bash
+# 저장소 클론
+git clone https://github.com/your-username/wafer-defect-detection.git
+cd wafer-defect-detection
+
+# 의존성 설치
+pip install -r requirements.txt
+
+# 사전 훈련된 모델 다운로드
+python download_pretrained_models.py
+```
+
+### 🎯 추론 실행
+
+#### 기본 추론 파이프라인
+```bash
+# config.py의 DATASET_ROOT 사용
+python train.py
+
+# 특정 데이터셋 지정
+python train.py /path/to/your/dataset/
+```
+
+#### 예측 모드
+```bash
+# 단일 이미지 예측
+python train.py --predict image.jpg
+
+# 폴더 배치 예측 (라벨 없음)
+python train.py --predict /path/to/images/
+
+# ImageFolder 구조 성능 평가 (라벨 있음)
+python train.py --predict /path/to/dataset/
+```
+
+### 📊 출력 결과
+```
+enhanced_pipeline_output/
+├── performance_report.json          # 성능 분석 리포트
+├── class_roi_patterns.json          # Grad-CAM 학습된 ROI 패턴
+├── discovered_mappings.json         # 객체-클래스 매핑 관계
+├── class_info.json                  # 클래스 정보
+├── confusion_matrix_*.png           # 혼동 행렬 시각화
+└── sample_predictions/              # 샘플 예측 결과
+```
+
+### ⚙️ 설정 커스터마이징
+`config.py`에서 모든 설정을 관리합니다:
+```python
+# 데이터셋 설정
+DATASET_ROOT: str = "your_dataset_path"
+OUTPUT_DIR: str = "enhanced_pipeline_output"
+
+# 모델 설정
+CONVNEXT_PRETRAINED_MODEL: str = "pretrained_models/convnextv2_base.pth"
+YOLO_INPUT_SIZE: int = 1024
+CLASSIFICATION_SIZE: int = 384
+
+# 성능 임계값
+F1_THRESHOLD: float = 0.75          # 어려운 클래스 식별 기준
+CONFIDENCE_THRESHOLD: float = 0.75  # ROI 적용 신뢰도 기준
+```
+
 ---
 
-**🎉 GitHub에 업로드하시면 완벽한 프로젝트가 될 것 같습니다!**
+**🎉 완벽한 웨이퍼 불량 검출 추론 시스템이 완성되었습니다!**

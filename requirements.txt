@@ -1,23 +1,9 @@
-# 🎯 Enhanced Wafer Defect Detection - 필수 라이브러리
-
-# Deep Learning Framework
-torch>=2.0.0
-torchvision>=0.15.0
-
-# Computer Vision Models  
-timm>=0.9.0                    # ConvNeXtV2 모델
-ultralytics>=8.0.0            # YOLO 객체 검출
-
-# Image Processing & Scientific Computing
-Pillow>=9.5.0                 # 이미지 로딩/저장
-opencv-python>=4.8.0          # ROI 이미지 처리 (crop, resize)
-numpy>=1.21.0                 # 수치 계산
-scikit-learn>=1.3.0           # 성능 메트릭 (F1 score 등)
-
-# Visualization for Performance Analysis
-matplotlib>=3.6.0             # Confusion matrix 시각화
-seaborn>=0.11.0              # 고급 통계 시각화
-
-# Installation Notes:
-# CUDA 지원: pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
-# CPU 전용: pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+numpy
+pillow
+torch
+torchvision
+timm
+opencv-python
+scikit-learn
+matplotlib
+tqdm

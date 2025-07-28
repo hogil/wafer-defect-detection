@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 
 
 class WaferTrainer:
-    """🎯 ImageFolder 기반 웨이퍼 훈련+추론 시스템"""
+    """🎯 웨이퍼 불량 검출 시스템 (추론 전용)"""
     
     def __init__(self, dataset_root: str, config_manager: ConfigManager = None):
         self.dataset_root = Path(dataset_root)
@@ -59,7 +59,11 @@ class WaferTrainer:
             self.config_manager = config_manager
         
         self.config = self.config_manager.get_config()
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        # device 설정 (항상 GPU 사용, 없으면 에러)
+        if torch.cuda.is_available():
+            self.device = torch.device('cuda')
+        else:
+            raise RuntimeError('CUDA(GPU)가 필요합니다. GPU 환경에서 실행하세요!')
         
         # 출력 디렉토리 생성
         self.output_dir = Path(self.config.OUTPUT_DIR)
@@ -85,7 +89,7 @@ class WaferTrainer:
         # Grad-CAM 분석기 (나중에 초기화)
         self.gradcam_analyzer = None
         
-        logger.info("🎯 WaferTrainer initialized")
+        logger.info("🎯 WaferTrainer initialized (Inference Only)")
         logger.info(f"  Dataset: {self.dataset_root}")
         logger.info(f"  Output: {self.output_dir}")
         logger.info(f"  Device: {self.device}")
@@ -119,31 +123,21 @@ class WaferTrainer:
         
         train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
         
-        # 데이터 증강을 위한 별도 transform
-        train_transform = transforms.Compose([
-            transforms.Resize((self.config.CLASSIFICATION_SIZE, self.config.CLASSIFICATION_SIZE)),
-            transforms.RandomHorizontalFlip(0.5),
-            transforms.RandomRotation(10),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-        ])
-        
-        # Train 데이터셋에 augmentation 적용
-        train_dataset.dataset.transform = train_transform
-        
-        # 데이터 로더 생성
+        # 데이터 로더 생성 (추론용, augmentation 없음)
         self.train_loader = DataLoader(
             train_dataset, 
             batch_size=self.config.BATCH_SIZE, 
-            shuffle=True, 
-            num_workers=4
+            shuffle=False,  # 추론이므로 shuffle=False
+            num_workers=4,
+            pin_memory=True
         )
         
         self.val_loader = DataLoader(
             val_dataset, 
             batch_size=self.config.BATCH_SIZE * 2, 
             shuffle=False, 
-            num_workers=4
+            num_workers=4,
+            pin_memory=True
         )
         
         print(f"📊 Dataset split:")
@@ -164,7 +158,9 @@ class WaferTrainer:
         )
         
         # 사전 훈련된 가중치 로드
-        pretrained_path = Path("pretrained_models") / f"{self.config.CONVNEXT_MODEL_NAME}_pretrained.pth"
+        pretrained_path = Path(self.config.CONVNEXT_PRETRAINED_MODEL)
+        weights_loaded = False
+        
         if pretrained_path.exists():
             print(f"🔄 Loading pretrained weights from: {pretrained_path}")
             pretrained_weights = torch.load(pretrained_path, map_location=self.device)
@@ -178,21 +174,25 @@ class WaferTrainer:
                 else:
                     clean_pretrained_weights[key] = value
             
-            # fine-tuning된 가중치는 모든 레이어가 정확히 매칭되어야 함
-            # strict=True로 정확한 키 매칭 요구
+            # 전체 레이어 strict=True로 로드 (헤드 포함)
             self.model.load_state_dict(clean_pretrained_weights, strict=True)
             print(f"✅ Pretrained weights loaded: {len(clean_pretrained_weights)} layers")
+            weights_loaded = True
         else:
             print(f"⚠️ Pretrained weights not found: {pretrained_path}")
-            print("   Training from scratch...")
+            print("   Cannot proceed without pretrained weights!")
+            return False
         
         self.model.to(self.device)
+        self.model.eval()  # 추론 모드로 설정
         
         print(f"✅ Model created:")
         print(f"  - Architecture: {self.config.CONVNEXT_MODEL_NAME}")
         print(f"  - Classes: {self.num_classes}")
         print(f"  - Image size: {self.config.CLASSIFICATION_SIZE}")
-        print(f"  - Pretrained: {'Yes' if pretrained_path.exists() else 'No'}")
+        print(f"  - Pretrained: {'Yes' if weights_loaded else 'No'}")
+        
+        return True
     
     def _learn_class_roi_patterns(self):
         """Grad-CAM을 사용하여 각 클래스별 ROI 패턴 학습"""
@@ -273,88 +273,67 @@ class WaferTrainer:
             self.yolo_objects = []
             self.num_yolo_objects = 0
     
-    def train(self, epochs: int = None):
-        """모델 훈련"""
+    def run_inference_pipeline(self):
+        """🎯 추론 파이프라인 실행 (학습 없음)"""
         
-        if epochs is None:
-            epochs = self.config.DEFAULT_EPOCHS
+        print("\n🎯 Enhanced Wafer Defect Detection - Inference Pipeline")
+        print("=" * 60)
         
-        print(f"🏋️ Training for {epochs} epochs...")
+        # 1. 모델 생성 및 가중치 로드
+        if not self._create_model():
+            return
         
-        # 데이터셋 및 모델 준비
+        # 2. 데이터셋 생성
         self._create_datasets()
-        self._create_model()
         
-        # 옵티마이저 및 손실함수
-        criterion = nn.CrossEntropyLoss()
-        optimizer = optim.AdamW(self.model.parameters(), lr=self.config.LEARNING_RATE, weight_decay=0.01)
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+        # 3. Classification 전수 실행 및 성능 분석
+        print("\n📊 STAGE 1: Classification Only Performance Analysis")
+        print("-" * 50)
         
-        best_val_acc = 0.0
+        train_cls_metrics = self._evaluate_dataset(self.train_loader, "Train-ClassificationOnly")
+        val_cls_metrics = self._evaluate_dataset(self.val_loader, "Validation-ClassificationOnly")
         
-        for epoch in range(epochs):
-            # Training
-            self.model.train()
-            train_loss = 0.0
-            train_correct = 0
-            train_total = 0
-            
-            for images, labels in self.train_loader:
-                images, labels = images.to(self.device), labels.to(self.device)
-                
-                optimizer.zero_grad()
-                outputs = self.model(images)
-                loss = criterion(outputs, labels)
-                loss.backward()
-                optimizer.step()
-                
-                train_loss += loss.item()
-                _, predicted = outputs.max(1)
-                train_total += labels.size(0)
-                train_correct += predicted.eq(labels).sum().item()
-            
-            # Validation
-            self.model.eval()
-            val_loss = 0.0
-            val_correct = 0
-            val_total = 0
-            
-            with torch.no_grad():
-                for images, labels in self.val_loader:
-                    images, labels = images.to(self.device), labels.to(self.device)
-                    
-                    outputs = self.model(images)
-                    loss = criterion(outputs, labels)
-                    
-                    val_loss += loss.item()
-                    _, predicted = outputs.max(1)
-                    val_total += labels.size(0)
-                    val_correct += predicted.eq(labels).sum().item()
-            
-            # 통계
-            train_acc = 100. * train_correct / train_total
-            val_acc = 100. * val_correct / val_total
-            
-            if epoch % 10 == 0 or epoch == epochs - 1:
-                print(f"  Epoch {epoch:3d}: Train Acc: {train_acc:.2f}%, Val Acc: {val_acc:.2f}%")
-            
-            # 최고 모델 저장
-            if val_acc > best_val_acc:
-                best_val_acc = val_acc
-                model_path = self.output_dir / self.config.CLASSIFICATION_MODEL_NAME
-                torch.save(self.model.state_dict(), model_path)
-            
-            scheduler.step()
+        # 4. 어려운 클래스 식별
+        self._identify_difficult_classes(val_cls_metrics)
         
-        print(f"✅ Training completed! Best Val Acc: {best_val_acc:.2f}%")
+        # 5. Grad-CAM으로 attention map 학습
+        print("\n🧠 STAGE 2: Grad-CAM Attention Pattern Learning")
+        print("-" * 50)
+        self._learn_class_roi_patterns()
         
-        # 클래스 정보 저장
+        # 6. YOLO 모델 로드
+        self._load_yolo_model()
+        
+        # 7. ROI 매핑 생성
+        print("\n🔗 STAGE 3: ROI Object Mapping Creation")
+        print("-" * 50)
+        self._create_roi_mappings()
+        
+        # 8. ROI Enhanced 성능 분석
+        print("\n📊 STAGE 4: ROI Enhanced Performance Analysis")
+        print("-" * 50)
+        
+        train_roi_metrics = self._evaluate_dataset_with_roi(self.train_loader, "Train-ROIEnhanced")
+        val_roi_metrics = self._evaluate_dataset_with_roi(self.val_loader, "Validation-ROIEnhanced")
+        
+        # 9. 성능 비교 및 리포트 저장
+        print("\n📋 STAGE 5: Performance Comparison & Report")
+        print("-" * 50)
+        
+        self._save_comprehensive_performance_report(
+            train_cls_metrics, val_cls_metrics,
+            train_roi_metrics, val_roi_metrics
+        )
+        
+        # 10. 클래스 정보 저장
         self._save_class_info()
         
-        # 2단계 성능 분석 (Classification Only → ROI Enhanced)
-        self._analyze_validation_performance()
-        
-        return best_val_acc
+        print("\n🎉 Inference Pipeline Completed!")
+        print("=" * 60)
+        print(f"📁 Results saved to: {self.output_dir}")
+        print(f"📊 Performance report: {self.output_dir}/performance_report.json")
+        print(f"🧠 ROI patterns: {self.output_dir}/class_roi_patterns.json")
+        print(f"🔗 Object mappings: {self.output_dir}/discovered_mappings.json")
     
     def _save_class_info(self):
         """클래스 정보 저장"""
@@ -375,6 +354,22 @@ class WaferTrainer:
             json.dump(class_info, f, indent=2, ensure_ascii=False)
         
         print(f"💾 Class info saved: {info_path}")
+    
+    def _identify_difficult_classes(self, val_metrics: Dict[str, Any]):
+        """어려운 클래스 식별"""
+        
+        print("\n🎯 Identifying difficult classes...")
+        
+        f1_scores = val_metrics.get('class_f1_scores', [])
+        self.difficult_classes = []
+        
+        for i, f1 in enumerate(f1_scores):
+            if f1 < self.config.F1_THRESHOLD:
+                class_name = self.classes[i]
+                self.difficult_classes.append(class_name)
+                print(f"  ⚠️ Difficult class: {class_name} (F1 = {f1:.3f})")
+        
+        print(f"✅ Found {len(self.difficult_classes)} difficult classes")
     
     def _analyze_validation_performance(self):
         """2단계 성능 분석: Classification Only → ROI Enhanced"""
@@ -1727,18 +1722,9 @@ def main():
                 print(f"  - All probabilities:")
                 for cls, prob in result['all_probabilities'].items():
                     print(f"    {cls}: {prob:.3f}")
-        
         else:
-            # 기본 모드: 훈련
-            print(f"🏋️ Training mode: {args.mode}")
-            epochs = args.epochs or trainer.config.DEFAULT_EPOCHS
-            print(f"🏋️ Training for {epochs} epochs...")
-            
-            best_acc = trainer.train(epochs)
-            
-            print(f"🎉 Training completed!")
-            print(f"  - Best accuracy: {best_acc:.2f}%")
-            print(f"  - Model saved: {trainer.output_dir / trainer.config.CLASSIFICATION_MODEL_NAME}")
+            # 추론 파이프라인 실행 (기본 동작)
+            trainer.run_inference_pipeline()
     
     except Exception as e:
         print(f"❌ Error: {e}")

@@ -18,6 +18,7 @@ class SystemConfig:
     
     # 모델 파일명
     DETECTION_MODEL: str = "pretrained_models/yolo11x.pt"  # YOLO 모델 (사전 훈련됨)
+    CONVNEXT_PRETRAINED_MODEL: str = "pretrained_models/convnextv2_base.fcmae_ft_in22k_in1k_pretrained.pth"  # ConvNeXtV2 사전 훈련 가중치
     CLASSIFICATION_MODEL_NAME: str = "best_classification_model.pth"  # 분류 모델
     CONVNEXT_MODEL_NAME: str = "convnextv2_base.fcmae_ft_in22k_in1k"  # ConvNeXtV2
     MAPPING_RESULTS_FILE: str = "discovered_mappings.json"  # ROI 매핑 결과
