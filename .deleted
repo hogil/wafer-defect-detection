@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""
+🧪 Code Test - 코드 동작 확인용 테스트
+"""
+
+import sys
+import torch
+import numpy as np
+from pathlib import Path
+
+# 프로젝트 경로 추가
+sys.path.append('.')
+
+def test_imports():
+    """라이브러리 import 테스트"""
+    print("🧪 Testing imports...")
+    
+    try:
+        import torch
+        import torchvision
+        import timm
+        import ultralytics
+        import sklearn
+        import cv2
+        from PIL import Image
+        print("✅ All imports successful")
+        return True
+    except ImportError as e:
+        print(f"❌ Import error: {e}")
+        return False
+
+def test_gradcam():
+    """GradCAM 클래스 테스트"""
+    print("\n🧪 Testing GradCAM...")
+    
+    try:
+        from gradcam_utils import GradCAMAnalyzer, extract_roi_from_heatmap
+        
+        # 더미 모델 생성
+        import timm
+        model = timm.create_model('convnextv2_base.fcmae_ft_in22k_in1k', pretrained=False, num_classes=5)
+        
+        # GradCAM 초기화
+        gradcam = GradCAMAnalyzer(model, "stages.3")
+        
+        # 더미 입력으로 테스트
+        dummy_input = torch.randn(1, 3, 384, 384)
+        heatmap = gradcam.generate_gradcam(dummy_input, target_class=0)
+        
+        # ROI 추출 테스트
+        roi_coords = extract_roi_from_heatmap(heatmap)
+        
+        print(f"✅ GradCAM test passed - Heatmap shape: {heatmap.shape}, ROI: {roi_coords}")
+        return True
+        
+    except Exception as e:
+        print(f"❌ GradCAM test failed: {e}")
+        return False
+
+def test_wafer_detector():
+    """WaferDetector 클래스 테스트"""
+    print("\n🧪 Testing WaferDetector...")
+    
+    try:
+        from wafer_detector import WaferDetector
+        
+        # 더미 설정
+        config = {
+            'CLASSIFICATION_SIZE': 384,
+            'YOLO_SIZE': 1024,
+            'F1_THRESHOLD': 0.8,
+            'CONFIDENCE_THRESHOLD': 0.7,
+            'MAPPING_THRESHOLD': 0.3
+        }
+        
+        # 검출기 초기화
+        detector = WaferDetector(config)
+        
+        print("✅ WaferDetector initialization successful")
+        
+        # 클래스 정보 설정 테스트
+        detector.classes = ['normal', 'crack', 'scratch']
+        detector.difficult_classes = ['crack']
+        detector.roi_patterns = {
+            'crack': {'x1': 0.2, 'y1': 0.3, 'x2': 0.7, 'y2': 0.8}
+        }
+        detector.class_object_mapping = {'crack': 'line'}
+        
+        print("✅ WaferDetector configuration successful")
+        return True
+        
+    except Exception as e:
+        print(f"❌ WaferDetector test failed: {e}")
+        return False
+
+def test_main_imports():
+    """Main 모듈 import 테스트"""
+    print("\n🧪 Testing main imports...")
+    
+    try:
+        from main import CONFIG, run_pipeline, run_prediction
+        print(f"✅ Main imports successful - CONFIG keys: {list(CONFIG.keys())}")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Main import test failed: {e}")
+        return False
+
+def main():
+    """전체 테스트 실행"""
+    print("🚀 Starting code tests...\n")
+    
+    tests = [
+        ("Basic Imports", test_imports),
+        ("GradCAM Module", test_gradcam),
+        ("WaferDetector Module", test_wafer_detector),
+        ("Main Module", test_main_imports)
+    ]
+    
+    results = []
+    for test_name, test_func in tests:
+        try:
+            success = test_func()
+            results.append((test_name, success))
+        except Exception as e:
+            print(f"❌ {test_name} crashed: {e}")
+            results.append((test_name, False))
+    
+    # 결과 요약
+    print("\n" + "="*50)
+    print("🎯 Test Results Summary:")
+    print("="*50)
+    
+    passed = 0
+    for test_name, success in results:
+        status = "✅ PASS" if success else "❌ FAIL"
+        print(f"{test_name:20s} {status}")
+        if success:
+            passed += 1
+    
+    print(f"\nTotal: {passed}/{len(results)} tests passed")
+    
+    if passed == len(results):
+        print("\n🎉 All tests passed! Code is ready to run.")
+    else:
+        print(f"\n⚠️ {len(results) - passed} test(s) failed. Check dependencies and code.")
+
+if __name__ == "__main__":
+    main()

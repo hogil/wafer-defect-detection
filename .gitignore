@@ -16,10 +16,34 @@ parts/
 sdist/
 var/
 wheels/
+pip-wheel-metadata/
+share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
 MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
 
 # Virtual environments
 .env
@@ -29,15 +53,80 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+.conda/
 
-# IDE
+# IDEs
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# OS
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# PyCharm
+.idea/
+
+# Spyder
+.spyderproject
+.spyproject
+
+# Rope
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Project specific
+outputs/
+results/
+logs/
+*.log
+temp/
+tmp/
+.temp/
+
+# Model files (large binary files)
+*.pth
+*.pt
+*.onnx
+*.h5
+*.pkl
+*.joblib
+
+# Dataset directories
+dataset/
+data/
+datasets/
+images/
+test_dataset/
+train_dataset/
+val_dataset/
+
+# Generated files
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+visualization/
+heatmaps/
+roi_images/
+confusion_matrices/
+
+# Configuration files with sensitive data
+config_local.json
+.env.local
+secrets.json
+
+# OS specific
 .DS_Store
 .DS_Store?
 ._*
@@ -46,47 +135,27 @@ venv.bak/
 ehthumbs.db
 Thumbs.db
 
-# Model files (too large for GitHub)
-*.pth
-*.pt
-*.onnx
-*.weights
-*.safetensors
+# Windows
+desktop.ini
 
-# Data files
-data/
-datasets/
-*.csv
-*.xlsx
-dataset*/
-*_dataset/
-
-# Large image files  
-*.jpg
-*.png
-*.jpeg
-*.tiff
-*.bmp
-*.tif
-
-# Output files
-outputs/
-results/
-experiments/
-*.log
-
-# Temporary files
-temp*/
-tmp*/
-.cache/
+# System files
+*.tmp
 *.bak
-*.del
-.deleted
+*.swp
+*.old
 
-# Jupyter
-.ipynb_checkpoints
+# PyTorch specific
+lightning_logs/
+wandb/
+mlruns/
 
-# Test files
-test_*/
-*_test/
-*_old.py
+# Temporary experiment files
+experiments/
+checkpoints/
+saved_models/
+pretrained_models/
+
+# Local development
+local_config.json
+test_outputs/
+debug/
