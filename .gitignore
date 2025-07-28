@@ -1,0 +1,113 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Model files (too large)
+*.pth
+*.pt
+*.onnx
+*.weights
+*.safetensors
+
+# Data files
+data/
+datasets/
+*.csv
+*.xlsx
+*.json
+dataset*/
+*_dataset/
+processed_dataset/
+pipeline_output/
+enhanced_pipeline_output/
+
+# Large image files  
+*.jpg
+*.png
+*.jpeg
+*.tiff
+*.bmp
+*.tif
+
+# Temporary files
+temp*/
+tmp*/
+cache/
+.cache/
+temp_wafer.jpg
+
+# Test files
+test_*/
+*_test/
+integration_*/
+
+# Logs
+logs/
+*.log
+wandb/
+mlruns/
+
+# Results
+results/
+outputs/
+experiments/
+checkpoints/
+saved_models/
+trained_models/
+
+# Jupyter
+.ipynb_checkpoints
+
+# Backup files
+*.bak
+*.bak.*
+*.del
+
+# Unnecessary directories
+configs/
+data/
+notebooks/
