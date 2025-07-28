@@ -35,13 +35,12 @@ class SystemConfig:
     # =====================================================
     # 🔍 ROI (Region of Interest) 설정
     # =====================================================
-    ROI_METHOD: str = "wafer_center"  # ROI 검출 방법: 'center_square', 'wafer_center', 'brightness'
-    YOLO_INPUT_SIZE: int = 1024  # YOLO 모델 입력 크기
+    YOLO_INPUT_SIZE: int = 1024  # YOLO 모델 입력 크기 (정사각형)
     
-    # ROI 검출 방법 설명:
-    # - center_square: 이미지 중앙 기준 정사각형
-    # - wafer_center: HoughCircles/밝기 분석으로 웨이퍼 중심 검출
-    # - brightness: 가장 밝은 영역 기준
+    # ROI는 Grad-CAM으로 자동 학습됨:
+    # - 각 클래스별 attention 패턴 분석
+    # - class_roi_patterns.json에 저장
+    # - 원본 이미지에서 정사각형 crop 후 YOLO 크기로 resize
     
     # =====================================================
     # 🚀 훈련 및 모델 설정
