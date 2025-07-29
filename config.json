@@ -8,6 +8,7 @@
   "CONFIDENCE_THRESHOLD": 0.7,
   "MAPPING_THRESHOLD": 0.3,
   "OUTPUT_DIR": "outputs",
+  "MAPPING_RATIO_THRESHOLD": 0.5,
   "description": "Default configuration for Wafer Defect Detection System",
   "version": "1.0.0",
   "processing": {

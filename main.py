@@ -132,13 +132,13 @@ def run_full_pipeline(detector: WaferDetector, dataset_root: str, config: Dict[s
         logger.info("Stage 1: Performance Analysis")
         f1_scores = detector.analyze_performance(dataset_root)
         
-        # Stage 2: ROI 패턴 학습
+        # Stage 2: ROI Pattern Learning
         logger.info("Stage 2: ROI Pattern Learning")
-        detector.learn_roi_patterns(dataset_root)
+        detector.learn_roi_patterns()
         
-        # Stage 3: 클래스-객체 매핑 생성
+        # Stage 3: Class-Object Mapping
         logger.info("Stage 3: Class-Object Mapping")
-        detector.create_mapping(dataset_root)
+        detector.create_mapping()
         
         # Stage 4: 결과 저장
         logger.info("Stage 4: Saving Results")
@@ -266,24 +266,28 @@ def run_prediction_mode(
             with open(results_file, 'w') as f:
                 json.dump(results, f, indent=2)
             
-            # 통계 출력
+            # 예측 결과 분석
             logger.info("Batch Prediction Results:")
-            logger.info(f"   Total Images: {len(image_files)}")
+            logger.info(f"   Total Images: {len(results)}")
             logger.info(f"   Successful Predictions: {len(results)}")
             logger.info(f"   Classification Only: {method_counts['classification_only']}")
             logger.info(f"   ROI Enhanced: {method_counts['roi_enhanced']}")
             logger.info(f"   Results saved to: {results_file}")
             
-            # 클래스별 예측 분포
+            # 클래스 분포 출력
             class_counts = {}
-            for result in results:
-                class_name = result['predicted_class']
+            for pred in results:
+                class_name = pred['predicted_class']
                 class_counts[class_name] = class_counts.get(class_name, 0) + 1
             
             logger.info("   Class Distribution:")
             for class_name, count in sorted(class_counts.items()):
                 logger.info(f"     {class_name}: {count}")
-        
+            
+            # ROI Enhanced 결과를 기반으로 성능 분석
+            if results:
+                detector.analyze_prediction_performance(results, predict_path)
+            
         else:
             raise ValueError(f"Invalid prediction path: {predict_path}")
             

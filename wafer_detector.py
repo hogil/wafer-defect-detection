@@ -4,6 +4,7 @@
 지능형 2단계 검출: 기본 분류 + ROI 기반 정밀 검증
 """
 
+import os
 import json
 import logging
 from pathlib import Path
@@ -17,7 +18,7 @@ import timm
 from ultralytics import YOLO
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
-from sklearn.metrics import precision_recall_fscore_support
+from sklearn.metrics import precision_recall_fscore_support, precision_score, recall_score, f1_score, confusion_matrix
 
 from gradcam_utils import GradCAMAnalyzer, extract_roi_from_heatmap
 
@@ -73,22 +74,13 @@ class WaferDetector:
         모델 로드
         
         Args:
-            model_path: ConvNeXtV2 모델 경로
+            model_path: 분류 모델 경로
             yolo_path: YOLO 모델 경로
             
         Raises:
             WaferDetectorError: 모델 로드 실패시
         """
         try:
-            model_path = Path(model_path)
-            yolo_path = Path(yolo_path)
-            
-            # 파일 존재 확인
-            if not model_path.exists():
-                raise WaferDetectorError(f"Classification model not found: {model_path}")
-            if not yolo_path.exists():
-                raise WaferDetectorError(f"YOLO model not found: {yolo_path}")
-            
             # 1. 가중치 로드 및 prefix 제거
             logger.info("Loading model weights...")
             state_dict = torch.load(model_path, map_location="cpu")
@@ -106,22 +98,38 @@ class WaferDetector:
                 raise WaferDetectorError("Invalid model weights: missing head.fc.weight")
             num_classes = cleaned_state_dict['head.fc.weight'].shape[0]
             logger.info(f"Detected {num_classes} classes from model weights")
-            
+
             # 3. ConvNeXtV2 모델 생성 (pth 파일의 클래스 수로)
             logger.info("Creating ConvNeXtV2 model...")
             self.classification_model = timm.create_model(
-                'convnextv2_base.fcmae_ft_in22k_in1k', 
+                'convnextv2_base.fcmae_ft_in22k_in1k',
                 pretrained=False,  # 가중치를 직접 로드할 것이므로 False
                 num_classes=num_classes
             )
             
             # 4. 가중치 로드
             self.classification_model.load_state_dict(cleaned_state_dict, strict=True)
-            self.classification_model.to(self.device).eval()
+            logger.info("Model weights loaded successfully")
             
-            # 5. GradCAM 및 YOLO 초기화
-            self.gradcam_analyzer = GradCAMAnalyzer(self.classification_model)
-            self.yolo_model = YOLO(str(yolo_path))
+            # 5. 분류기를 데이터셋 클래스 수로 변경 (나중에 load_classes에서 설정됨)
+            # 이 부분은 load_classes에서 처리됨
+            
+            # YOLO 모델 로드
+            if not Path(yolo_path).exists():
+                raise WaferDetectorError(f"YOLO model not found: {yolo_path}")
+            
+            self.yolo_model = YOLO(yolo_path)
+            logger.info("YOLO model loaded successfully")
+            
+            # GradCAM 초기화
+            self.gradcam_analyzer = GradCAMAnalyzer(
+                self.classification_model,
+                target_layer_name=self.config['advanced']['target_layer_name']
+            )
+            
+            # 모델을 디바이스로 이동
+            self.classification_model.to(self.device)
+            self.classification_model.eval()
             
             logger.info(f"Models loaded successfully - Classes: {num_classes}")
             
@@ -130,25 +138,35 @@ class WaferDetector:
     
     def load_classes(self, dataset_root: Union[str, Path]) -> None:
         """
-        클래스 정보 로드
+        데이터셋에서 클래스 로드
         
         Args:
             dataset_root: 데이터셋 루트 경로
             
         Raises:
-            WaferDetectorError: 데이터셋 로드 실패시
+            WaferDetectorError: 클래스 로드 실패시
         """
         try:
             dataset_root = Path(dataset_root)
             if not dataset_root.exists():
                 raise WaferDetectorError(f"Dataset root not found: {dataset_root}")
             
-            dataset = datasets.ImageFolder(str(dataset_root))
+            # ImageFolder로 클래스 로드
+            dataset = datasets.ImageFolder(str(dataset_root), transform=self.transform)
             self.classes = dataset.classes
             
-            if not self.classes:
-                raise WaferDetectorError("No classes found in dataset")
+            # 분류기를 데이터셋 클래스 수로 변경
+            if self.classification_model is not None:
+                num_features = self.classification_model.head.fc.in_features
                 
+                # 새로운 분류기 생성 (완전히 새로 초기화)
+                new_fc = nn.Linear(num_features, len(self.classes))
+                nn.init.xavier_uniform_(new_fc.weight)
+                nn.init.zeros_(new_fc.bias)
+                
+                self.classification_model.head.fc = new_fc
+                logger.info(f"Classifier reset to {len(self.classes)} classes (random initialization)")
+            
             logger.info(f"Classes loaded: {self.classes}")
             
         except Exception as e:
@@ -212,206 +230,427 @@ class WaferDetector:
                 all_preds = adjusted_preds
                 all_labels = adjusted_labels
             
-            # Precision 계산
-            precision, _, f1_scores, _ = precision_recall_fscore_support(
-                all_labels, all_preds, average=None, zero_division=0
-            )
-            self.precision_scores = precision
-            self.f1_scores = f1_scores
+            # 성능 지표 계산
+            precision = precision_score(all_labels, all_preds, average='weighted', zero_division=0)
+            recall = recall_score(all_labels, all_preds, average='weighted', zero_division=0)
+            f1 = f1_score(all_labels, all_preds, average='weighted', zero_division=0)
+            
+            # 클래스별 상세 메트릭
+            class_precision = precision_score(all_labels, all_preds, average=None, zero_division=0)
+            class_recall = recall_score(all_labels, all_preds, average=None, zero_division=0)
+            class_f1 = f1_score(all_labels, all_preds, average=None, zero_division=0)
+            
+            # Confusion Matrix 생성
+            cm = confusion_matrix(all_labels, all_preds)
+            
+            # 결과 출력
+            logger.info("=" * 60)
+            logger.info("PERFORMANCE ANALYSIS RESULTS")
+            logger.info("=" * 60)
+            logger.info(f"Overall Metrics:")
+            logger.info(f"  Precision: {precision:.4f}")
+            logger.info(f"  Recall: {recall:.4f}")
+            logger.info(f"  F1-Score: {f1:.4f}")
+            logger.info("")
+            logger.info("Class-wise Metrics:")
+            for i, class_name in enumerate(self.classes):
+                logger.info(f"  {class_name}:")
+                logger.info(f"    Precision: {class_precision[i]:.4f}")
+                logger.info(f"    Recall: {class_recall[i]:.4f}")
+                logger.info(f"    F1-Score: {class_f1[i]:.4f}")
+            logger.info("=" * 60)
             
             # 어려운 클래스 식별 (Precision 기준)
             self.difficult_classes = [
-                self.classes[i] for i, prec in enumerate(precision) 
+                self.classes[i] for i, prec in enumerate(class_precision) 
                 if prec < self.config['PRECISION_THRESHOLD']
             ]
+            logger.info(f"Identified {len(self.difficult_classes)} difficult classes: {self.difficult_classes}")
             
-            # 결과 출력
-            logger.info("Performance Analysis Results:")
-            for i, (prec, f1) in enumerate(zip(precision, f1_scores)):
-                status = "WARNING" if prec < self.config['PRECISION_THRESHOLD'] else "OK"
-                logger.info(f"   {status} {self.classes[i]}: Precision={prec:.3f}, F1={f1:.3f}")
+            # 메트릭을 TXT 파일로 저장
+            self.save_metrics_to_txt(cm, class_precision, class_recall, class_f1, precision, recall, f1)
             
-            logger.info(f"Identified {len(self.difficult_classes)} difficult classes")
+            # 결과 저장
+            performance_results = {
+                'overall': {
+                    'precision': precision,
+                    'recall': recall,
+                    'f1_score': f1
+                },
+                'class_wise': {
+                    class_name: {
+                        'precision': float(class_precision[i]),
+                        'recall': float(class_recall[i]),
+                        'f1_score': float(class_f1[i])
+                    } for i, class_name in enumerate(self.classes)
+                },
+                'confusion_matrix': cm.tolist(),
+                'class_names': self.classes,
+                'difficult_classes': self.difficult_classes
+            }
             
-            return precision
+            # Confusion Matrix 시각화 및 저장
+            self.save_confusion_matrix(cm, self.classes)
+            
+            return performance_results
             
         except Exception as e:
             raise WaferDetectorError(f"Performance analysis failed: {str(e)}")
     
-    def learn_roi_patterns(self, dataset_root: Union[str, Path], max_samples: int = 10) -> None:
-        """
-        ROI 패턴 학습
-        
-        Args:
-            dataset_root: 데이터셋 루트 경로
-            max_samples: 클래스당 최대 샘플 수
-            
-        Raises:
-            WaferDetectorError: ROI 패턴 학습 실패시
-        """
+    def analyze_prediction_performance(self, predictions, dataset_path):
+        """예측 결과를 기반으로 성능 분석을 수행합니다."""
         try:
-            if not self.difficult_classes:
-                logger.info("No difficult classes found, skipping ROI pattern learning")
-                return
+            logger.info("Analyzing prediction performance...")
+            
+            # 실제 클래스와 예측 클래스 수집
+            all_labels = []
+            all_preds = []
+            
+            for pred in predictions:
+                image_path = pred['image_path']
+                predicted_class = pred['predicted_class']
                 
-            if self.gradcam_analyzer is None:
-                raise WaferDetectorError("GradCAM analyzer not initialized")
+                # 이미지 경로에서 실제 클래스 추출
+                actual_class = self._extract_class_from_path(image_path, dataset_path)
+                
+                if actual_class in self.classes:
+                    actual_idx = self.classes.index(actual_class)
+                    predicted_idx = self.classes.index(predicted_class)
+                    
+                    all_labels.append(actual_idx)
+                    all_preds.append(predicted_idx)
             
-            dataset_root = Path(dataset_root)
-            logger.info(f"Learning ROI patterns for {len(self.difficult_classes)} classes...")
+            if not all_labels:
+                logger.warning("No valid labels found for performance analysis")
+                return
             
-            for class_name in self.difficult_classes:
-                try:
-                    class_dir = dataset_root / class_name
-                    if not class_dir.exists():
-                        logger.warning(f"Class directory not found: {class_dir}")
-                        continue
-                    
-                    image_files = list(class_dir.glob("*.jpg")) + list(class_dir.glob("*.png"))
-                    if not image_files:
-                        logger.warning(f"No images found in {class_dir}")
-                        continue
-                    
-                    roi_coords_list = []
-                    processed_count = 0
-                    
-                    for img_path in image_files[:max_samples]:
-                        try:
-                            image = Image.open(img_path).convert('RGB')
-                            input_tensor = self.transform(image).unsqueeze(0).to(self.device)
-                            
-                            class_idx = self.classes.index(class_name)
-                            heatmap = self.gradcam_analyzer.generate_gradcam(input_tensor, class_idx)
-                            roi_coords = extract_roi_from_heatmap(heatmap)
-                            roi_coords_list.append(roi_coords)
-                            processed_count += 1
-                            
-                        except Exception as e:
-                            logger.warning(f"Failed to process {img_path}: {str(e)}")
-                            continue
-                    
-                    if roi_coords_list:
-                        # 중앙값으로 대표 ROI 계산
-                        roi_array = np.array(roi_coords_list)
-                        representative_roi = np.median(roi_array, axis=0)
-                        
-                        self.roi_patterns[class_name] = {
-                            'x1': float(representative_roi[0]), 
-                            'y1': float(representative_roi[1]),
-                            'x2': float(representative_roi[2]), 
-                            'y2': float(representative_roi[3])
-                        }
-                        
-                        logger.info(f"{class_name}: ROI learned from {processed_count} samples")
-                    else:
-                        logger.warning(f"Failed to learn ROI pattern for {class_name}")
-                        
-                except Exception as e:
-                    logger.error(f"Error learning ROI for {class_name}: {str(e)}")
-                    continue
-                    
+            # 성능 지표 계산
+            from sklearn.metrics import precision_score, recall_score, f1_score, confusion_matrix
+            
+            precision = precision_score(all_labels, all_preds, average='weighted', zero_division=0)
+            recall = recall_score(all_labels, all_preds, average='weighted', zero_division=0)
+            f1 = f1_score(all_labels, all_preds, average='weighted', zero_division=0)
+            
+            # 클래스별 상세 메트릭
+            class_precision = precision_score(all_labels, all_preds, average=None, zero_division=0)
+            class_recall = recall_score(all_labels, all_preds, average=None, zero_division=0)
+            class_f1 = f1_score(all_labels, all_preds, average=None, zero_division=0)
+            
+            # Confusion Matrix 생성
+            cm = confusion_matrix(all_labels, all_preds)
+            
+            # 결과 출력
+            logger.info("=" * 60)
+            logger.info("PREDICTION PERFORMANCE ANALYSIS")
+            logger.info("=" * 60)
+            logger.info(f"Overall Metrics:")
+            logger.info(f"  Precision: {precision:.4f}")
+            logger.info(f"  Recall: {recall:.4f}")
+            logger.info(f"  F1-Score: {f1:.4f}")
+            logger.info("")
+            logger.info("Class-wise Metrics:")
+            for i, class_name in enumerate(self.classes):
+                logger.info(f"  {class_name}:")
+                logger.info(f"    Precision: {class_precision[i]:.4f}")
+                logger.info(f"    Recall: {class_recall[i]:.4f}")
+                logger.info(f"    F1-Score: {class_f1[i]:.4f}")
+            logger.info("=" * 60)
+            
+            # 메트릭을 TXT 파일로 저장
+            self.save_prediction_metrics_to_txt(cm, class_precision, class_recall, class_f1, precision, recall, f1)
+            
+            # Confusion Matrix 시각화 및 저장
+            self.save_prediction_confusion_matrix(cm, self.classes)
+            
+            logger.info("Prediction performance analysis completed!")
+            
         except Exception as e:
+            logger.error(f"Failed to analyze prediction performance: {e}")
+    
+    def _extract_class_from_path(self, image_path, dataset_path):
+        """이미지 경로에서 실제 클래스를 추출합니다."""
+        try:
+            # 상대 경로를 절대 경로로 변환
+            abs_image_path = os.path.abspath(image_path)
+            abs_dataset_path = os.path.abspath(dataset_path)
+            
+            # 데이터셋 경로를 제거하여 상대 경로 얻기
+            if abs_image_path.startswith(abs_dataset_path):
+                relative_path = abs_image_path[len(abs_dataset_path):].lstrip(os.sep)
+                # 첫 번째 디렉토리가 클래스명
+                class_name = relative_path.split(os.sep)[0]
+                return class_name
+            
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to extract class from path {image_path}: {e}")
+            return None
+    
+    def save_prediction_metrics_to_txt(self, cm, class_precision, class_recall, class_f1, overall_precision, overall_recall, overall_f1):
+        """예측 메트릭을 TXT 파일로 저장합니다."""
+        try:
+            metrics_path = os.path.join(self.config['OUTPUT_DIR'], 'prediction_metrics.txt')
+            
+            with open(metrics_path, 'w', encoding='utf-8') as f:
+                f.write("=" * 80 + "\n")
+                f.write("WAFER DEFECT DETECTION - PREDICTION PERFORMANCE METRICS\n")
+                f.write("=" * 80 + "\n\n")
+                
+                # 전체 메트릭
+                f.write("OVERALL METRICS:\n")
+                f.write("-" * 40 + "\n")
+                f.write(f"Precision: {overall_precision:.4f}\n")
+                f.write(f"Recall: {overall_recall:.4f}\n")
+                f.write(f"F1-Score: {overall_f1:.4f}\n\n")
+                
+                # 클래스별 메트릭
+                f.write("CLASS-WISE METRICS:\n")
+                f.write("-" * 40 + "\n")
+                f.write(f"{'Class':<20} {'Precision':<12} {'Recall':<12} {'F1-Score':<12} {'Correct':<10} {'Total':<10}\n")
+                f.write("-" * 80 + "\n")
+                
+                for i, class_name in enumerate(self.classes):
+                    # Confusion Matrix에서 TP, FP, FN 계산
+                    tp = cm[i, i]
+                    fp = cm[:, i].sum() - tp
+                    fn = cm[i, :].sum() - tp
+                    total = cm[i, :].sum()
+                    
+                    f.write(f"{class_name:<20} {class_precision[i]:<12.4f} {class_recall[i]:<12.4f} {class_f1[i]:<12.4f} {tp:<10} {total:<10}\n")
+                
+                f.write("\n" + "=" * 80 + "\n")
+                f.write("CONFUSION MATRIX:\n")
+                f.write("-" * 40 + "\n")
+                
+                # Confusion Matrix 출력
+                f.write(f"{'':<15}")
+                for class_name in self.classes:
+                    f.write(f"{class_name:<10}")
+                f.write("\n")
+                
+                for i, class_name in enumerate(self.classes):
+                    f.write(f"{class_name:<15}")
+                    for j in range(len(self.classes)):
+                        f.write(f"{cm[i, j]:<10}")
+                    f.write("\n")
+                
+                f.write("\n" + "=" * 80 + "\n")
+                f.write("CONFIGURATION:\n")
+                f.write("-" * 40 + "\n")
+                f.write(f"Precision Threshold: {self.config['PRECISION_THRESHOLD']}\n")
+                f.write(f"Confidence Threshold: {self.config['CONFIDENCE_THRESHOLD']}\n")
+                f.write(f"Mapping Threshold: {self.config['MAPPING_THRESHOLD']}\n")
+                f.write(f"Mapping Ratio Threshold: {self.config['MAPPING_RATIO_THRESHOLD']}\n")
+            
+            logger.info(f"Prediction metrics saved to: {metrics_path}")
+            
+        except Exception as e:
+            logger.error(f"Failed to save prediction metrics to TXT: {e}")
+    
+    def save_prediction_confusion_matrix(self, cm, class_names):
+        """예측 결과 기반 Confusion Matrix를 시각화하고 저장합니다."""
+        try:
+            import matplotlib.pyplot as plt
+            import seaborn as sns
+            
+            # Confusion Matrix 시각화
+            plt.figure(figsize=(12, 10))
+            
+            # Confusion Matrix만 표시
+            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
+                       xticklabels=class_names, yticklabels=class_names)
+            plt.title('Prediction Confusion Matrix', fontsize=16, fontweight='bold')
+            plt.xlabel('Predicted', fontsize=12)
+            plt.ylabel('Actual', fontsize=12)
+            plt.xticks(rotation=45, ha='right')
+            plt.yticks(rotation=0)
+            
+            plt.tight_layout()
+            
+            # 저장
+            cm_path = os.path.join(self.config['OUTPUT_DIR'], 'prediction_confusion_matrix.png')
+            plt.savefig(cm_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            logger.info(f"Prediction confusion matrix saved to: {cm_path}")
+            
+        except Exception as e:
+            logger.error(f"Failed to save prediction confusion matrix: {e}")
+    
+    def learn_roi_patterns(self):
+        """모든 클래스에 대해 ROI 패턴을 학습합니다."""
+        try:
+            logger.info(f"Learning ROI patterns for {len(self.classes)} classes...")
+            
+            for class_name in self.classes:
+                class_dir = os.path.join(self.config['DATASET_ROOT'], class_name)
+                if not os.path.exists(class_dir):
+                    logger.warning(f"Class directory not found: {class_dir}")
+                    continue
+                
+                # 클래스별 샘플 수 제한
+                max_samples = self.config['processing']['max_roi_samples']
+                image_files = [f for f in os.listdir(class_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+                image_files = image_files[:max_samples]
+                
+                if not image_files:
+                    logger.warning(f"No images found for class {class_name}")
+                    continue
+                
+                class_idx = self.classes.index(class_name)
+                roi_patterns = []
+                
+                for image_file in image_files:
+                    try:
+                        img_path = os.path.join(class_dir, image_file)
+                        image = Image.open(img_path).convert('RGB')
+                        
+                        # GradCAM으로 ROI 추출
+                        transform = transforms.Compose([
+                            transforms.Resize((224, 224)),
+                            transforms.ToTensor(),
+                            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+                        ])
+                        input_tensor = transform(image).unsqueeze(0)
+                        
+                        heatmap = self.gradcam_analyzer.generate_gradcam(input_tensor, class_idx)
+                        roi_coords = extract_roi_from_heatmap(heatmap)
+                        
+                        roi_patterns.append({
+                            'x1': roi_coords[0],
+                            'y1': roi_coords[1], 
+                            'x2': roi_coords[2],
+                            'y2': roi_coords[3]
+                        })
+                        
+                    except Exception as e:
+                        logger.warning(f"Failed to process {image_file}: {e}")
+                        continue
+                
+                if roi_patterns:
+                    # ROI 좌표 평균 계산
+                    avg_roi = {
+                        'x1': sum(r['x1'] for r in roi_patterns) / len(roi_patterns),
+                        'y1': sum(r['y1'] for r in roi_patterns) / len(roi_patterns),
+                        'x2': sum(r['x2'] for r in roi_patterns) / len(roi_patterns),
+                        'y2': sum(r['y2'] for r in roi_patterns) / len(roi_patterns)
+                    }
+                    self.roi_patterns[class_name] = avg_roi
+                    logger.info(f"{class_name}: ROI learned from {len(roi_patterns)} samples")
+                else:
+                    logger.warning(f"No valid ROI patterns found for {class_name}")
+            
+            logger.info(f"ROI patterns learned for {len(self.roi_patterns)} classes")
+            
+        except Exception as e:
+            logger.error(f"ROI pattern learning failed: {str(e)}")
             raise WaferDetectorError(f"ROI pattern learning failed: {str(e)}")
     
-    def create_mapping(self, dataset_root: Union[str, Path], max_samples: int = 30) -> None:
-        """
-        클래스-객체 매핑 생성
-        
-        Args:
-            dataset_root: 데이터셋 루트 경로
-            max_samples: 클래스당 최대 샘플 수
-            
-        Raises:
-            WaferDetectorError: 매핑 생성 실패시
-        """
+    def create_mapping(self):
+        """모든 클래스에 대해 GradCAM attention 영역에서 객체 매핑을 생성합니다."""
         try:
-            if not self.difficult_classes or not self.roi_patterns:
-                logger.info("No difficult classes or ROI patterns, skipping mapping creation")
-                return
-                
-            if self.yolo_model is None:
-                raise WaferDetectorError("YOLO model not loaded")
+            logger.info("Creating object mappings from GradCAM attention regions...")
             
-            dataset_root = Path(dataset_root)
-            logger.info(f"Creating object mappings...")
+            # 클래스별 객체 카운트 수집
+            class_object_counts = {class_name: {} for class_name in self.classes}
             
-            class_object_counts = {}
-            
-            for class_name in self.difficult_classes:
-                if class_name not in self.roi_patterns:
-                    logger.warning(f"No ROI pattern for {class_name}, skipping")
+            for class_name in self.classes:
+                class_dir = os.path.join(self.config['DATASET_ROOT'], class_name)
+                if not os.path.exists(class_dir):
+                    logger.warning(f"Class directory not found: {class_dir}")
                     continue
                 
-                try:
-                    class_dir = dataset_root / class_name
-                    image_files = list(class_dir.glob("*.jpg")) + list(class_dir.glob("*.png"))
-                    object_counts = {}
-                    processed_count = 0
-                    
-                    for img_path in image_files[:max_samples]:
-                        try:
-                            # ROI 추출
-                            image = Image.open(img_path).convert('RGB')
-                            w, h = image.size
-                            roi = self.roi_patterns[class_name]
-                            
-                            x1 = max(0, int(roi['x1'] * w))
-                            y1 = max(0, int(roi['y1'] * h))
-                            x2 = min(w, int(roi['x2'] * w))
-                            y2 = min(h, int(roi['y2'] * h))
-                            
-                            # 유효한 ROI 확인
-                            if x2 <= x1 or y2 <= y1:
-                                logger.warning(f"Invalid ROI for {img_path}")
-                                continue
-                            
-                            roi_image = image.crop((x1, y1, x2, y2)).resize(
-                                (self.config['YOLO_SIZE'], self.config['YOLO_SIZE'])
-                            )
-                            
-                            # YOLO 검출
-                            results = self.yolo_model(np.array(roi_image), verbose=False)
-                            if len(results) > 0 and len(results[0].boxes) > 0:
-                                confidences = results[0].boxes.conf.cpu().numpy()
-                                classes = results[0].boxes.cls.cpu().numpy()
-                                
-                                for conf, cls in zip(confidences, classes):
-                                    if conf > 0.5:
-                                        obj_name = self.yolo_model.names[int(cls)]
-                                        object_counts[obj_name] = object_counts.get(obj_name, 0) + 1
-                                        
-                            processed_count += 1
-                            
-                        except Exception as e:
-                            logger.warning(f"Failed to process {img_path}: {str(e)}")
-                            continue
-                    
-                    class_object_counts[class_name] = object_counts
-                    logger.info(f"Processed {processed_count} samples for {class_name}")
-                    
-                except Exception as e:
-                    logger.error(f"Error creating mapping for {class_name}: {str(e)}")
+                # 클래스별 샘플 수 제한
+                max_samples = self.config['processing']['max_mapping_samples']
+                image_files = [f for f in os.listdir(class_dir) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+                image_files = image_files[:max_samples]
+                
+                if not image_files:
+                    logger.warning(f"No images found for {class_name}")
                     continue
+                
+                class_idx = self.classes.index(class_name)
+                processed_count = 0
+                
+                for image_file in image_files:
+                    try:
+                        img_path = os.path.join(class_dir, image_file)
+                        image = Image.open(img_path).convert('RGB')
+                        
+                        # GradCAM으로 attention 영역 추출
+                        transform = transforms.Compose([
+                            transforms.Resize((224, 224)),
+                            transforms.ToTensor(),
+                            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+                        ])
+                        input_tensor = transform(image).unsqueeze(0)
+                        
+                        heatmap = self.gradcam_analyzer.generate_gradcam(input_tensor, class_idx)
+                        roi_coords = extract_roi_from_heatmap(heatmap)
+                        
+                        # ROI 영역에서 객체 검출
+                        w, h = image.size
+                        x1 = max(0, int(roi_coords[0] * w))
+                        y1 = max(0, int(roi_coords[1] * h))
+                        x2 = min(w, int(roi_coords[2] * w))
+                        y2 = min(h, int(roi_coords[3] * h))
+                        
+                        if x2 > x1 and y2 > y1:
+                            roi_image = image.crop((x1, y1, x2, y2))
+                            results = self.yolo_model(roi_image, verbose=False)
+                            
+                            # 검출된 객체 카운트
+                            for result in results:
+                                if result.boxes is not None:
+                                    for box in result.boxes:
+                                        if box.conf > self.config['MAPPING_THRESHOLD']:
+                                            obj_class = int(box.cls.item())
+                                            obj_name = self.yolo_model.names[obj_class]
+                                            
+                                            if obj_name not in class_object_counts[class_name]:
+                                                class_object_counts[class_name][obj_name] = 0
+                                            class_object_counts[class_name][obj_name] += 1
+                        
+                        processed_count += 1
+                        
+                    except Exception as e:
+                        logger.warning(f"Failed to process {image_file}: {e}")
+                        continue
+                
+                logger.info(f"Processed {processed_count} samples for {class_name}")
             
-            # 매핑 생성
+            # 매핑 생성 (비율 기반)
             mapping_created = 0
             for class_name, obj_counts in class_object_counts.items():
                 if obj_counts:
+                    total_detections = sum(obj_counts.values())
                     best_obj, count = max(obj_counts.items(), key=lambda x: x[1])
-                    total = sum(obj_counts.values())
-                    ratio = count / total
+                    ratio = count / total_detections
                     
-                    if ratio >= self.config['MAPPING_THRESHOLD']:
+                    # 비율이 임계값 이상인 경우만 매핑
+                    if ratio >= self.config['MAPPING_RATIO_THRESHOLD']:
                         self.class_object_mapping[class_name] = best_obj
                         mapping_created += 1
-                        logger.info(f"{class_name} -> {best_obj} ({ratio:.2f})")
+                        logger.info(f"{class_name} -> {best_obj} (ratio: {ratio:.2f}, count: {count}/{total_detections})")
                     else:
-                        logger.warning(f"Low confidence mapping for {class_name}: {ratio:.2f}")
-                        
-            logger.info(f"Created {mapping_created} class-object mappings")
+                        logger.warning(f"Low ratio mapping for {class_name}: {ratio:.2f} < {self.config['MAPPING_RATIO_THRESHOLD']}")
+                else:
+                    # 객체가 검출되지 않았을 때 랜덤 매핑 생성
+                    import random
+                    available_objects = list(self.yolo_model.names.values())
+                    if available_objects:
+                        random_obj = random.choice(available_objects)
+                        self.class_object_mapping[class_name] = random_obj
+                        mapping_created += 1
+                        logger.info(f"{class_name} -> {random_obj} (random assignment - no objects detected)")
+                    else:
+                        logger.warning(f"No available objects for {class_name}")
+            
+            logger.info(f"Created {mapping_created} mappings")
             
         except Exception as e:
-            raise WaferDetectorError(f"Mapping creation failed: {str(e)}")
+            logger.error(f"Failed to create mappings: {e}")
+            raise
     
     def predict_image(self, image_path: Union[str, Path]) -> Dict[str, Any]:
         """
@@ -454,75 +693,70 @@ class WaferDetector:
                 
                 predicted_class = self.classes[predicted_idx]
             
-            result = {
+            # ROI Enhanced 예측 (신뢰도가 낮고 어려운 클래스인 경우)
+            if confidence < self.config['CONFIDENCE_THRESHOLD'] and predicted_class in self.difficult_classes:
+                logger.info(f"Low confidence prediction ({confidence:.3f}) for difficult class {predicted_class}")
+                
+                # ROI 영역에서 객체 검출
+                roi_objects = self._detect_objects_in_roi(image, predicted_class)
+                
+                # 객체 검출 실패 시 원래 classification 결과 반환
+                if not roi_objects:
+                    logger.info(f"No objects detected in ROI, returning original classification: {predicted_class}")
+                    return {
+                        'image_path': str(image_path),
+                        'predicted_class': predicted_class,
+                        'confidence': confidence,
+                        'method': 'classification',
+                        'detected_object': None,
+                        'roi_objects': []
+                    }
+                
+                # 매핑된 객체와 비교
+                if predicted_class in self.class_object_mapping:
+                    mapped_object = self.class_object_mapping[predicted_class]
+                    if mapped_object in roi_objects:
+                        logger.info(f"ROI Enhanced: {predicted_class} -> {mapped_object} (confidence: {confidence:.3f})")
+                        return {
+                            'image_path': str(image_path),
+                            'predicted_class': predicted_class,
+                            'confidence': confidence,
+                            'method': 'roi_enhanced',
+                            'detected_object': mapped_object,
+                            'roi_objects': roi_objects
+                        }
+                    else:
+                        # 검출된 객체에 따라 다른 클래스로 예측 변경
+                        for detected_obj in roi_objects:
+                            for class_name, mapped_obj in self.class_object_mapping.items():
+                                if detected_obj == mapped_obj:
+                                    logger.info(f"ROI Enhanced: {predicted_class} -> {class_name} (via {detected_obj}) (confidence: {confidence:.3f})")
+                                    return {
+                                        'image_path': str(image_path),
+                                        'predicted_class': class_name, # 예측 클래스를 변경
+                                        'confidence': confidence,
+                                        'method': 'roi_enhanced',
+                                        'detected_object': detected_obj,
+                                        'roi_objects': roi_objects
+                                    }
+                
+                # 매핑 테이블에 해당 클래스가 없거나 매핑된 객체가 없는 경우 원래 결과 반환
+                logger.info(f"No matching mapping found, returning original classification: {predicted_class}")
+                return {
+                    'image_path': str(image_path),
+                    'predicted_class': predicted_class,
+                    'confidence': confidence,
+                    'method': 'classification',
+                    'detected_object': None,
+                    'roi_objects': roi_objects
+                }
+            
+            return {
                 'image_path': str(image_path),
                 'predicted_class': predicted_class,
                 'confidence': confidence,
                 'method': 'classification_only'
             }
-            
-            # ROI 검증 조건 확인
-            needs_roi = (
-                predicted_class in self.difficult_classes and
-                confidence < self.config['CONFIDENCE_THRESHOLD']
-            )
-            
-            if needs_roi:
-                try:
-                    # ROI 패턴 확인
-                    if predicted_class not in self.roi_patterns:
-                        logger.warning(f"No ROI pattern for {predicted_class}, skipping ROI analysis")
-                        return result
-                    
-                    # ROI에서 객체 검출
-                    w, h = image.size
-                    roi = self.roi_patterns[predicted_class]
-                    
-                    x1 = max(0, int(roi['x1'] * w))
-                    y1 = max(0, int(roi['y1'] * h))
-                    x2 = min(w, int(roi['x2'] * w))
-                    y2 = min(h, int(roi['y2'] * h))
-                    
-                    if x2 > x1 and y2 > y1:
-                        roi_image = image.crop((x1, y1, x2, y2)).resize(
-                            (self.config['YOLO_SIZE'], self.config['YOLO_SIZE'])
-                        )
-                        yolo_results = self.yolo_model(np.array(roi_image), verbose=False)
-                        
-                        if len(yolo_results) > 0 and len(yolo_results[0].boxes) > 0:
-                            object_counts = {}
-                            confidences = yolo_results[0].boxes.conf.cpu().numpy()
-                            classes = yolo_results[0].boxes.cls.cpu().numpy()
-                            
-                            for conf, cls in zip(confidences, classes):
-                                if conf > 0.5:
-                                    obj_name = self.yolo_model.names[int(cls)]
-                                    object_counts[obj_name] = object_counts.get(obj_name, 0) + 1
-                            
-                            if object_counts:
-                                most_detected_obj = max(object_counts.items(), key=lambda x: x[1])[0]
-                                
-                                # 모든 매핑에서 해당 객체 찾기
-                                for mapped_class, mapped_obj in self.class_object_mapping.items():
-                                    if mapped_obj == most_detected_obj:
-                                        result.update({
-                                            'predicted_class': mapped_class,
-                                            'confidence': 0.9,
-                                            'method': 'roi_enhanced',
-                                            'detected_object': most_detected_obj,
-                                            'object_counts': object_counts,
-                                            'roi_coordinates': roi,
-                                            'original_prediction': predicted_class
-                                        })
-                                        break
-                                else:
-                                    # 매핑되지 않은 객체인 경우 기본 결과 유지
-                                    logger.info(f"Detected object '{most_detected_obj}' not found in mappings")
-                        
-                except Exception as e:
-                    logger.warning(f"ROI processing failed: {str(e)}")
-            
-            return result
             
         except Exception as e:
             raise WaferDetectorError(f"Image prediction failed: {str(e)}")
@@ -614,3 +848,146 @@ class WaferDetector:
                 'gradcam': self.gradcam_analyzer is not None
             }
         }
+
+    def save_confusion_matrix(self, cm, class_names):
+        """Confusion Matrix를 시각화하고 저장합니다."""
+        try:
+            import matplotlib.pyplot as plt
+            import seaborn as sns
+            
+            # Confusion Matrix 시각화
+            plt.figure(figsize=(12, 10))
+            
+            # Confusion Matrix만 표시
+            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
+                       xticklabels=class_names, yticklabels=class_names)
+            plt.title('Confusion Matrix', fontsize=16, fontweight='bold')
+            plt.xlabel('Predicted', fontsize=12)
+            plt.ylabel('Actual', fontsize=12)
+            plt.xticks(rotation=45, ha='right')
+            plt.yticks(rotation=0)
+            
+            plt.tight_layout()
+            
+            # 저장
+            cm_path = os.path.join(self.config['OUTPUT_DIR'], 'confusion_matrix.png')
+            plt.savefig(cm_path, dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            logger.info(f"Confusion matrix saved to: {cm_path}")
+            
+        except Exception as e:
+            logger.error(f"Failed to save confusion matrix: {e}")
+
+    def _detect_objects_in_roi(self, image, predicted_class):
+        """ROI 영역에서 객체를 검출합니다."""
+        try:
+            if predicted_class not in self.roi_patterns:
+                logger.warning(f"No ROI pattern for {predicted_class}")
+                return []
+            
+            # ROI 좌표 계산
+            w, h = image.size
+            roi = self.roi_patterns[predicted_class]
+            
+            x1 = max(0, int(roi['x1'] * w))
+            y1 = max(0, int(roi['y1'] * h))
+            x2 = min(w, int(roi['x2'] * w))
+            y2 = min(h, int(roi['y2'] * h))
+            
+            if x2 <= x1 or y2 <= y1:
+                logger.warning(f"Invalid ROI coordinates: {roi}")
+                return []
+            
+            # ROI 이미지 추출 및 YOLO 검출
+            roi_image = image.crop((x1, y1, x2, y2)).resize(
+                (self.config['YOLO_SIZE'], self.config['YOLO_SIZE'])
+            )
+            yolo_results = self.yolo_model(np.array(roi_image), verbose=False)
+            
+            detected_objects = []
+            if len(yolo_results) > 0 and len(yolo_results[0].boxes) > 0:
+                confidences = yolo_results[0].boxes.conf.cpu().numpy()
+                classes = yolo_results[0].boxes.cls.cpu().numpy()
+                
+                for conf, cls in zip(confidences, classes):
+                    if conf > self.config['processing']['yolo_confidence_threshold']:
+                        obj_name = self.yolo_model.names[int(cls)]
+                        detected_objects.append(obj_name)
+                
+                logger.info(f"Detected objects in ROI: {detected_objects}")
+            else:
+                logger.info("No objects detected in ROI")
+            
+            return detected_objects
+            
+        except Exception as e:
+            logger.warning(f"ROI object detection failed: {str(e)}")
+            return []
+
+    def save_metrics_to_txt(self, cm, class_precision, class_recall, class_f1, overall_precision, overall_recall, overall_f1):
+        """메트릭을 TXT 파일로 저장합니다."""
+        try:
+            metrics_path = os.path.join(self.config['OUTPUT_DIR'], 'performance_metrics.txt')
+            
+            with open(metrics_path, 'w', encoding='utf-8') as f:
+                f.write("=" * 80 + "\n")
+                f.write("WAFER DEFECT DETECTION - PERFORMANCE METRICS\n")
+                f.write("=" * 80 + "\n\n")
+                
+                # 전체 메트릭
+                f.write("OVERALL METRICS:\n")
+                f.write("-" * 40 + "\n")
+                f.write(f"Precision: {overall_precision:.4f}\n")
+                f.write(f"Recall: {overall_recall:.4f}\n")
+                f.write(f"F1-Score: {overall_f1:.4f}\n\n")
+                
+                # 클래스별 메트릭
+                f.write("CLASS-WISE METRICS:\n")
+                f.write("-" * 40 + "\n")
+                f.write(f"{'Class':<20} {'Precision':<12} {'Recall':<12} {'F1-Score':<12} {'Correct':<10} {'Total':<10}\n")
+                f.write("-" * 80 + "\n")
+                
+                for i, class_name in enumerate(self.classes):
+                    # Confusion Matrix에서 TP, FP, FN 계산
+                    tp = cm[i, i]
+                    fp = cm[:, i].sum() - tp
+                    fn = cm[i, :].sum() - tp
+                    total = cm[i, :].sum()
+                    
+                    f.write(f"{class_name:<20} {class_precision[i]:<12.4f} {class_recall[i]:<12.4f} {class_f1[i]:<12.4f} {tp:<10} {total:<10}\n")
+                
+                f.write("\n" + "=" * 80 + "\n")
+                f.write("CONFUSION MATRIX:\n")
+                f.write("-" * 40 + "\n")
+                
+                # Confusion Matrix 출력
+                f.write(f"{'':<15}")
+                for class_name in self.classes:
+                    f.write(f"{class_name:<10}")
+                f.write("\n")
+                
+                for i, class_name in enumerate(self.classes):
+                    f.write(f"{class_name:<15}")
+                    for j in range(len(self.classes)):
+                        f.write(f"{cm[i, j]:<10}")
+                    f.write("\n")
+                
+                f.write("\n" + "=" * 80 + "\n")
+                f.write("DIFFICULT CLASSES:\n")
+                f.write("-" * 40 + "\n")
+                for class_name in self.difficult_classes:
+                    f.write(f"- {class_name}\n")
+                
+                f.write("\n" + "=" * 80 + "\n")
+                f.write("CONFIGURATION:\n")
+                f.write("-" * 40 + "\n")
+                f.write(f"Precision Threshold: {self.config['PRECISION_THRESHOLD']}\n")
+                f.write(f"Confidence Threshold: {self.config['CONFIDENCE_THRESHOLD']}\n")
+                f.write(f"Mapping Threshold: {self.config['MAPPING_THRESHOLD']}\n")
+                f.write(f"Mapping Ratio Threshold: {self.config['MAPPING_RATIO_THRESHOLD']}\n")
+            
+            logger.info(f"Performance metrics saved to: {metrics_path}")
+            
+        except Exception as e:
+            logger.error(f"Failed to save metrics to TXT: {e}")
